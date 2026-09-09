@@ -55,7 +55,7 @@ npm run build
 npm run tauri:build
 ```
 
-推送形如 `v0.2.0` 的版本标签后，GitHub Actions 会在 Windows Runner 上自动构建并上传 `.msi` 和 `-setup.exe` 安装包到对应 Release。也可以在 GitHub Actions 页面手动运行 `Windows Release`，指定已有版本标签补发 Windows 安装包。
+推送形如 `v0.2.1` 的版本标签后，GitHub Actions 会在 Windows Runner 上自动构建并上传 `.msi` 和 `-setup.exe` 安装包到对应 Release。也可以在 GitHub Actions 页面手动运行 `Windows Release`，指定已有版本标签补发 Windows 安装包。
 
 ### 使用步骤
 
