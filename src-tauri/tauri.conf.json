@@ -40,8 +40,8 @@
       "icons/icon.png"
     ],
     "category": "DeveloperTool",
-    "shortDescription": "Mac 上的专业服务器日志查看工具",
-    "longDescription": "LogSight 是一款专业的 Mac 桌面应用，用于通过 SSH 连接远程服务器，实时流式查看日志文件、搜索关键字、过滤日志级别，支持多服务器多标签页管理。",
+    "shortDescription": "跨平台远程服务器日志查看工具",
+    "longDescription": "LogSight 是一款跨平台桌面应用，用于通过 SSH 连接远程服务器，实时流式查看日志文件、搜索关键字、过滤日志级别，支持多服务器多标签页管理。",
     "copyright": "Copyright © 2026 LogSight contributors",
     "macOS": {
       "frameworks": [],
