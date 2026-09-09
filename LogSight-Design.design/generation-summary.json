@@ -1,0 +1,69 @@
+{
+  "skill": {
+    "name": "solo-graphic-generation",
+    "version": "2026.08.06.21.24.57",
+    "release": "unsupported-size-user-confirmation"
+  },
+  "requestedSizeVerbatim": "1024×1024 应用图标",
+  "confirmedImageSize": "square_hd (1024×1024)",
+  "userConfirmedSizeDifference": false,
+  "assetCount": 7,
+  "assets": [
+    {
+      "filename": "logsight-app-icon.jpg",
+      "title": "LogSight 应用图标",
+      "intendedSize": "1024×1024",
+      "actualSizePreset": "square_hd",
+      "generationStatus": "success",
+      "canvasNodeId": "image-001"
+    },
+    {
+      "filename": "logsight-theme-palette.jpg",
+      "title": "LogSight 主题色板",
+      "intendedSize": "16:9 横版",
+      "actualSizePreset": "landscape_16_9 (1280×720)",
+      "generationStatus": "success",
+      "canvasNodeId": "image-002"
+    },
+    {
+      "filename": "logsight-app-icon-v2.jpg",
+      "title": "LogSight 应用图标 v2（扁平几何风）",
+      "intendedSize": "1024×1024",
+      "actualSizePreset": "square_hd",
+      "generationStatus": "success",
+      "canvasNodeId": "image-003"
+    },
+    {
+      "filename": "logsight-app-icon-cyberpunk.jpg",
+      "title": "LogSight 应用图标 v3（赛博朋克风）",
+      "intendedSize": "1024×1024",
+      "actualSizePreset": "square_hd",
+      "generationStatus": "success",
+      "canvasNodeId": "image-004"
+    },
+    {
+      "filename": "logsight-icon-macos.jpg",
+      "title": "LogSight 应用图标 v4（macOS 程序坞适配版）",
+      "intendedSize": "1024×1024",
+      "actualSizePreset": "square_hd",
+      "generationStatus": "success",
+      "canvasNodeId": "image-005"
+    },
+    {
+      "filename": "logsight-icon-final.jpg",
+      "title": "LogSight 应用图标 v5（最终版 · 深墨绿玉色）",
+      "intendedSize": "1024×1024",
+      "actualSizePreset": "square_hd",
+      "generationStatus": "success",
+      "canvasNodeId": "image-006"
+    },
+    {
+      "filename": "logsight-icon-refined.jpg",
+      "title": "LogSight 应用图标 v4b（墨绿圆角版备选）",
+      "intendedSize": "1024×1024",
+      "actualSizePreset": "square_hd",
+      "generationStatus": "success",
+      "canvasNodeId": "image-007"
+    }
+  ]
+}

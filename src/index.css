@@ -1,0 +1,765 @@
+/*
+ * 全局样式表
+ * LogSight 双主题设计系统：Dark（深色开发者风格）/ Light（清爽专业日间风格）
+ * 使用 CSS 自定义属性实现主题切换，Tailwind 与 AntD 共享同一套 token
+ * @Author: fu
+ * @LastEditors: fu
+ * @Date: 2026-08-27
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* =============================================
+   ====== CSS 变量定义：深色主题（默认） ======
+   ============================================= */
+:root,
+html.dark {
+  /* 背景层（偏蓝灰的深色，减少纯黑压抑感） */
+  --ls-bg-base: #0F1115;
+  --ls-bg-surface: #181A20;
+  --ls-bg-elevated: #20242C;
+  --ls-bg-sider: #14161B;
+  --ls-bg-overlay: rgba(226, 232, 240, 0.06);
+  --ls-bg-code: #0F1115;
+  --ls-bg-hover: rgba(226, 232, 240, 0.05);
+  --ls-bg-active: rgba(16, 185, 129, 0.10);
+
+  /* 文字层 */
+  --ls-text-primary: #F1F5F9;
+  --ls-text-secondary: #94A3B8;
+  --ls-text-tertiary: #64748B;
+  --ls-text-brand: #34D399;
+  --ls-text-inverse: #0F172A;
+
+  /* 边框层 */
+  --ls-border-l1: rgba(226, 232, 240, 0.08);
+  --ls-border-l2: rgba(226, 232, 240, 0.14);
+  --ls-border-brand: rgba(52, 211, 153, 0.40);
+
+  /* 品牌色（柔和翠绿 + 青色点缀） */
+  --ls-brand: #34D399;
+  --ls-brand-hover: #10B981;
+  --ls-brand-active: #059669;
+  --ls-brand-cyan: #22D3EE;
+  --ls-brand-lilac: #A78BFA;
+  --ls-brand-blue: #60A5FA;
+
+  /* 状态色 */
+  --ls-success: #34D399;
+  --ls-warning: #FBBF24;
+  --ls-error: #F87171;
+  --ls-info: #60A5FA;
+
+  /* 阴影 */
+  --ls-shadow-panel: 0 4px 20px rgba(0, 0, 0, 0.35);
+  --ls-shadow-float: 0 8px 30px rgba(0, 0, 0, 0.45);
+  --ls-shadow-btn: 0 0 12px 0 rgba(52, 211, 153, 0.16);
+  --ls-shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+/* =============================================
+   ====== CSS 变量定义：浅色主题 ======
+   ============================================= */
+html.light {
+  /* 背景层（清爽冷灰，避免纯白刺眼） */
+  --ls-bg-base: #F8FAFC;
+  --ls-bg-surface: #FFFFFF;
+  --ls-bg-elevated: #FFFFFF;
+  --ls-bg-sider: #F1F5F9;
+  --ls-bg-overlay: rgba(15, 23, 42, 0.03);
+  --ls-bg-code: #F8FAFC;
+  --ls-bg-hover: rgba(15, 23, 42, 0.04);
+  --ls-bg-active: rgba(13, 148, 136, 0.08);
+
+  /* 文字层 */
+  --ls-text-primary: #0F172A;
+  --ls-text-secondary: #475569;
+  --ls-text-tertiary: #94A3B8;
+  --ls-text-brand: #0D9488;
+  --ls-text-inverse: #FFFFFF;
+
+  /* 边框层 */
+  --ls-border-l1: rgba(15, 23, 42, 0.08);
+  --ls-border-l2: rgba(15, 23, 42, 0.12);
+  --ls-border-brand: rgba(13, 148, 136, 0.35);
+
+  /* 品牌色（深青碧色，沉稳专业） */
+  --ls-brand: #0D9488;
+  --ls-brand-hover: #0F766E;
+  --ls-brand-active: #115E59;
+  --ls-brand-cyan: #0891B2;
+  --ls-brand-lilac: #7C3AED;
+  --ls-brand-blue: #2563EB;
+
+  /* 状态色 */
+  --ls-success: #059669;
+  --ls-warning: #D97706;
+  --ls-error: #DC2626;
+  --ls-info: #2563EB;
+
+  /* 阴影 */
+  --ls-shadow-panel: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --ls-shadow-float: 0 8px 24px rgba(15, 23, 42, 0.10);
+  --ls-shadow-btn: 0 1px 3px rgba(13, 148, 136, 0.24);
+  --ls-shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.80);
+}
+
+/* =============================================
+   ====== 全局基础样式 ======
+   ============================================= */
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: var(--ls-bg-base);
+  color: var(--ls-text-primary);
+  font-family:
+    'SF Pro Text', -apple-system, BlinkMacSystemFont, 'PingFang SC',
+    'Helvetica Neue', Helvetica, Segoe UI, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* =============================================
+   ====== 滚动条：Mac 风格（双主题适配） ======
+   ============================================= */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+html.dark ::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.32);
+  background-clip: padding-box;
+}
+html.light ::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.20);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+html.light ::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.36);
+  background-clip: padding-box;
+}
+
+/* =============================================
+   ====== 日志行字体 & 颜色 ======
+   ============================================= */
+.log-line-text {
+  font-family:
+    'JetBrains Mono', 'SF Mono', Menlo, Monaco, Consolas, 'Courier New', monospace;
+  font-size: var(--ls-log-font-size, 12.5px);
+  line-height: 1.6;
+  min-width: 0;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* 主日志消息：默认换行完整展示，由 measureRow 动态测量行高适配 react-window。 */
+.log-message-main {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* ====== 深色模式：日志级别颜色（柔和调） ====== */
+html.dark .log-level-fatal { color: #FCA5A5; }
+html.dark .log-level-error { color: #FCA5A5; }
+html.dark .log-level-warn  { color: #FCD34D; }
+html.dark .log-level-info  { color: #93C5FD; }
+html.dark .log-level-debug { color: #64748B; }
+html.dark .log-level-trace { color: #94A3B8; opacity: 0.8; }
+html.dark .log-level-unknown { color: #CBD5E1; }
+
+/* ====== 浅色模式：日志级别颜色（沉稳清晰） ====== */
+html.light .log-level-fatal { color: #991B1B; }
+html.light .log-level-error { color: #DC2626; }
+html.light .log-level-warn  { color: #B45309; }
+html.light .log-level-info  { color: #2563EB; }
+html.light .log-level-debug { color: #64748B; }
+html.light .log-level-trace { color: #94A3B8; }
+html.light .log-level-unknown { color: #334155; }
+
+/* ====== 关键字高亮（柔和不刺眼） ====== */
+html.dark .kw-highlight {
+  background-color: rgba(52, 211, 153, 0.16);
+  color: #34D399;
+  padding: 0 3px;
+  border-radius: 3px;
+  font-weight: 600;
+}
+html.light .kw-highlight {
+  background-color: rgba(13, 148, 136, 0.12);
+  color: #0D9488;
+  padding: 0 3px;
+  border-radius: 3px;
+  font-weight: 600;
+}
+
+/* ====== 行号 ====== */
+html.dark .log-line-no {
+  color: var(--ls-text-tertiary);
+  text-align: right;
+  padding-right: 10px;
+  user-select: none;
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, Monaco, monospace;
+  font-size: calc(var(--ls-log-font-size, 12.5px) - 1px);
+  white-space: nowrap;
+}
+html.light .log-line-no {
+  color: #94A3B8;
+  text-align: right;
+  padding-right: 10px;
+  user-select: none;
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, Monaco, monospace;
+  font-size: calc(var(--ls-log-font-size, 12.5px) - 1px);
+  white-space: nowrap;
+}
+
+/* ====== 时间戳 ====== */
+html.dark .log-line-ts {
+  color: var(--ls-text-secondary);
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, Monaco, monospace;
+  font-size: calc(var(--ls-log-font-size, 12.5px) - 1px);
+  padding-right: 14px;
+  white-space: nowrap;
+}
+html.light .log-line-ts {
+  color: #64748B;
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, Monaco, monospace;
+  font-size: calc(var(--ls-log-font-size, 12.5px) - 1px);
+  padding-right: 14px;
+  white-space: nowrap;
+}
+
+/* =============================================
+   ====== 结构化列：级别徽标 / traceId / logger ======
+   对应 logback pattern 的 %-5level / %X{traceId} / %logger{50}
+   ============================================= */
+.log-level-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 3px;
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, Monaco, monospace;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+  user-select: none;
+}
+html.dark .log-level-badge.fatal { background: rgba(248, 113, 113, 0.18); color: #FCA5A5; }
+html.dark .log-level-badge.error { background: rgba(248, 113, 113, 0.15); color: #FCA5A5; }
+html.dark .log-level-badge.warn  { background: rgba(251, 191, 36, 0.15); color: #FCD34D; }
+html.dark .log-level-badge.info  { background: rgba(96, 165, 250, 0.14); color: #93C5FD; }
+html.dark .log-level-badge.debug { background: rgba(100, 116, 139, 0.18); color: #94A3B8; }
+html.dark .log-level-badge.trace { background: rgba(100, 116, 139, 0.12); color: #64748B; }
+html.dark .log-level-badge.unknown { background: rgba(100, 116, 139, 0.12); color: #64748B; }
+html.light .log-level-badge.fatal { background: rgba(153, 27, 27, 0.10); color: #991B1B; }
+html.light .log-level-badge.error { background: rgba(220, 38, 38, 0.10); color: #DC2626; }
+html.light .log-level-badge.warn  { background: rgba(180, 83, 9, 0.12); color: #B45309; }
+html.light .log-level-badge.info  { background: rgba(37, 99, 235, 0.10); color: #2563EB; }
+html.light .log-level-badge.debug { background: rgba(100, 116, 139, 0.12); color: #64748B; }
+html.light .log-level-badge.trace { background: rgba(148, 163, 184, 0.14); color: #94A3B8; }
+html.light .log-level-badge.unknown { background: rgba(148, 163, 184, 0.14); color: #94A3B8; }
+
+/* traceId 短码：等宽弱化，便于快速比对是否同一链路 */
+html.dark .log-trace {
+  color: #7C89A8;
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, Monaco, monospace;
+  font-size: calc(var(--ls-log-font-size, 12.5px) - 2px);
+  padding-right: 10px;
+  white-space: nowrap;
+}
+html.light .log-trace {
+  color: #94A3B8;
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, Monaco, monospace;
+  font-size: calc(var(--ls-log-font-size, 12.5px) - 2px);
+  padding-right: 10px;
+  white-space: nowrap;
+}
+
+/* logger 缩写：等宽弱化，title 属性可看完整类名 */
+html.dark .log-logger {
+  color: #8B98B0;
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, Monaco, monospace;
+  font-size: calc(var(--ls-log-font-size, 12.5px) - 2px);
+  padding-right: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+html.light .log-logger {
+  color: #64748B;
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, Monaco, monospace;
+  font-size: calc(var(--ls-log-font-size, 12.5px) - 2px);
+  padding-right: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 异常堆栈续行块：归属主行，缩进 + 左侧竖线 */
+html.dark .log-stack {
+  margin-top: 2px;
+  padding: 3px 0 3px 10px;
+  border-left: 2px solid rgba(148, 163, 184, 0.28);
+  background: rgba(226, 232, 240, 0.03);
+  color: #94A3B8;
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, Monaco, monospace;
+  font-size: calc(var(--ls-log-font-size, 12.5px) - 1px);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+html.light .log-stack {
+  margin-top: 2px;
+  padding: 3px 0 3px 10px;
+  border-left: 2px solid rgba(100, 116, 139, 0.25);
+  background: rgba(15, 23, 42, 0.02);
+  color: #64748B;
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, Monaco, monospace;
+  font-size: calc(var(--ls-log-font-size, 12.5px) - 1px);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* “+N 行堆栈”折叠提示 */
+html.dark .log-stack-hint {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.14);
+  color: #94A3B8;
+  font-size: 10px;
+  line-height: 16px;
+  cursor: pointer;
+  user-select: none;
+}
+html.light .log-stack-hint {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(100, 116, 139, 0.10);
+  color: #64748B;
+  font-size: 10px;
+  line-height: 16px;
+  cursor: pointer;
+  user-select: none;
+}
+
+/* 展开/收起三角箭头 */
+.log-twisty {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+  color: var(--ls-text-tertiary);
+  font-size: 9px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.log-twisty:hover { color: var(--ls-text-secondary); }
+
+/* 日志虚拟列表使用更宽的专用滚动条，便于鼠标拖动。 */
+.logsight-log-viewport > div::-webkit-scrollbar {
+  width: 14px;
+  height: 12px;
+}
+.logsight-log-viewport > div::-webkit-scrollbar-track {
+  background: var(--ls-bg-overlay);
+}
+.logsight-log-viewport > div::-webkit-scrollbar-thumb {
+  min-height: 44px;
+  border: 2px solid transparent;
+  border-radius: 10px;
+  background-color: color-mix(in srgb, var(--ls-text-tertiary) 58%, transparent);
+  background-clip: padding-box;
+}
+.logsight-log-viewport > div::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--ls-text-secondary) 78%, transparent);
+  background-clip: padding-box;
+}
+
+/* =============================================
+   ====== Mac 风格窗口拖拽区 ======
+   ============================================= */
+.mac-titlebar-drag {
+  -webkit-app-region: drag;
+  user-select: none;
+}
+.mac-titlebar-nd {
+  -webkit-app-region: no-drag;
+}
+
+/* =============================================
+   ====== Ant Design 组件微调 ======
+   ============================================= */
+.ant-tabs-nav {
+  margin-bottom: 0 !important;
+}
+
+/* Sider 边框 */
+.ant-layout-sider {
+  border-right: 1px solid var(--ls-border-l1) !important;
+}
+
+/* Header 边框 */
+.ant-layout-header {
+  border-bottom: 1px solid var(--ls-border-l1) !important;
+}
+
+/* Menu 项圆角 */
+.ant-menu-item {
+  border-radius: 6px !important;
+  margin: 2px 8px !important;
+}
+
+/* =============================================
+   ====== LogSight 布局安全模式 ======
+   ============================================= */
+.logsight-root-layout,
+.logsight-root-layout > .ant-layout {
+  height: 100vh !important;
+  width: 100vw !important;
+  min-height: 100vh !important;
+  overflow: hidden !important;
+}
+.logsight-tab-bar {
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+.logsight-tab-bar .ant-tabs-nav {
+  margin-bottom: 0 !important;
+  padding-bottom: 0 !important;
+}
+
+/* =============================================
+   ====== 连接表单标签页样式 ======
+   ============================================= */
+.auth-tab-pill {
+  display: inline-flex;
+  border: 1px solid var(--ls-border-l2);
+  border-radius: 8px;
+  overflow: hidden;
+  background-color: var(--ls-bg-overlay);
+}
+.auth-tab-pill button {
+  border: none;
+  padding: 6px 16px;
+  background: transparent;
+  color: var(--ls-text-secondary);
+  cursor: pointer;
+  transition: all 0.15s;
+  font-size: 13px;
+}
+.auth-tab-pill button.active {
+  background: var(--ls-brand);
+  color: var(--ls-text-inverse);
+  font-weight: 500;
+}
+.auth-tab-pill button:not(.active):hover {
+  background: var(--ls-bg-hover);
+  color: var(--ls-text-primary);
+}
+
+/* =============================================
+   ====== 品牌按钮辉光 ======
+   ============================================= */
+.ls-btn-primary-glow {
+  box-shadow: var(--ls-shadow-btn) !important;
+}
+
+/* =============================================
+   ====== 日志面板背景 ======
+   ============================================= */
+html.dark .log-panel-bg {
+  background-color: var(--ls-bg-code);
+}
+html.light .log-panel-bg {
+  background-color: #FAFBFC;
+}
+
+/* =============================================
+   ====== 顶部 Logo 渐变徽章（与图标配色一致） ======
+   ============================================= */
+html.dark .ls-logo-badge {
+  background: linear-gradient(135deg, #064E3B 0%, #047857 50%, #34D399 100%);
+}
+html.light .ls-logo-badge {
+  background: linear-gradient(135deg, #0F766E 0%, #0D9488 50%, #14B8A6 100%);
+}
+
+/* =============================================
+   ====== 新增：通用工具类 ======
+   ============================================= */
+html.dark .ls-surface {
+  background-color: var(--ls-bg-surface);
+  border: 1px solid var(--ls-border-l1);
+}
+html.light .ls-surface {
+  background-color: var(--ls-bg-surface);
+  border: 1px solid var(--ls-border-l1);
+  box-shadow: var(--ls-shadow-panel);
+}
+
+html.dark .ls-card-hover:hover {
+  background-color: var(--ls-bg-hover);
+  border-color: var(--ls-border-l2);
+}
+html.light .ls-card-hover:hover {
+  background-color: var(--ls-bg-hover);
+  border-color: var(--ls-border-l2);
+}
+
+/* =============================================
+   ====== Tooltip 强制样式覆盖（解决白底白字 + 初次出现抖动）
+          V12.3：三层全覆盖 + 多重 specificity 硬刚 AntD CSS-in-JS
+   ============================================= */
+.ant-tooltip,
+div[class*="ant-tooltip"] {
+  /* 抗抖动：稳定渲染层，避免出现时从 0px 弹跳 */
+  will-change: transform, opacity;
+  backface-visibility: hidden;
+  transform: translateZ(0);
+}
+.ant-tooltip .ant-tooltip-content,
+.ant-tooltip .ant-tooltip-inner,
+div[class*="ant-tooltip"] div[class*="-content"],
+div[class*="ant-tooltip"] div[class*="-inner"] {
+  /* 使用字体反锯齿，避免缩放时粗细变化导致视觉抖动 */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  line-height: 1.45;
+  box-sizing: border-box;
+}
+
+/* ====== 深色模式 Tooltip（强制覆盖，三层全量兜底） ====== */
+/* specificity 等级 1：双 class 组合 */
+html.dark .ant-tooltip .ant-tooltip-content,
+html.dark .ant-tooltip .ant-tooltip-inner,
+body.dark .ant-tooltip .ant-tooltip-content,
+body.dark .ant-tooltip .ant-tooltip-inner {
+  background: #2A2D31 !important;
+  background-color: #2A2D31 !important;
+  color: #E8EAED !important;
+  border: 1px solid rgba(232, 234, 237, 0.10) !important;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35) !important;
+}
+/* specificity 等级 2：直接子元素（更高优先级，覆盖 AntD 默认浅色底） */
+html.dark body.dark div.ant-tooltip > div.ant-tooltip-content > div.ant-tooltip-inner,
+html.dark div.ant-tooltip > div.ant-tooltip-content {
+  background: #2A2D31 !important;
+  background-color: #2A2D31 !important;
+  color: #E8EAED !important;
+}
+/* 箭头：三层 specificity 叠加 */
+html.dark .ant-tooltip .ant-tooltip-arrow::before,
+body.dark .ant-tooltip .ant-tooltip-arrow::before,
+html.dark body.dark div.ant-tooltip > div.ant-tooltip-content > div.ant-tooltip-arrow::before {
+  background-color: #2A2D31 !important;
+  background: #2A2D31 !important;
+}
+html.dark .ant-tooltip-placement-top .ant-tooltip-arrow::before,
+html.dark .ant-tooltip-placement-topLeft .ant-tooltip-arrow::before,
+html.dark .ant-tooltip-placement-topRight .ant-tooltip-arrow::before {
+  border-bottom-color: rgba(232, 234, 237, 0.10) !important;
+  border-right-color: rgba(232, 234, 237, 0.10) !important;
+}
+html.dark .ant-tooltip-placement-bottom .ant-tooltip-arrow::before,
+html.dark .ant-tooltip-placement-bottomLeft .ant-tooltip-arrow::before,
+html.dark .ant-tooltip-placement-bottomRight .ant-tooltip-arrow::before {
+  border-top-color: rgba(232, 234, 237, 0.10) !important;
+  border-left-color: rgba(232, 234, 237, 0.10) !important;
+}
+html.dark .ant-tooltip-placement-left .ant-tooltip-arrow::before {
+  border-right-color: rgba(232, 234, 237, 0.10) !important;
+  border-top-color: rgba(232, 234, 237, 0.10) !important;
+}
+html.dark .ant-tooltip-placement-right .ant-tooltip-arrow::before {
+  border-left-color: rgba(232, 234, 237, 0.10) !important;
+  border-bottom-color: rgba(232, 234, 237, 0.10) !important;
+}
+
+/* ====== 浅色模式 Tooltip（强制覆盖：白底 + 黑字）
+          白底 #FFFFFF + 近黑字 #0F172A，对比度 WCAG AAA
+   ====== */
+/* specificity 等级 1：html/body 双 light class */
+html.light .ant-tooltip .ant-tooltip-content,
+html.light .ant-tooltip .ant-tooltip-inner,
+body.light .ant-tooltip .ant-tooltip-content,
+body.light .ant-tooltip .ant-tooltip-inner,
+html[class~="light"] div[class~="ant-tooltip"] div[class~="ant-tooltip-content"],
+html[class~="light"] div[class~="ant-tooltip"] div[class~="ant-tooltip-inner"] {
+  background: #FFFFFF !important;
+  background-color: #FFFFFF !important;
+  color: #0F172A !important;
+  border: 1px solid rgba(15, 23, 42, 0.12) !important;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12) !important;
+}
+/* specificity 等级 2：直接子元素，硬刚 AntD CSS-in-JS 的 inline 注入样式 */
+html.light body.light div.ant-tooltip > div.ant-tooltip-content > div.ant-tooltip-inner,
+html.light body.light div.ant-tooltip > div.ant-tooltip-content {
+  background: #FFFFFF !important;
+  background-color: #FFFFFF !important;
+  color: #0F172A !important;
+}
+/* specificity 等级 3：再加一层伪类后缀，覆盖任何后注入的样式 */
+html.light:not(.dark) body.light:not(.dark) div.ant-tooltip.ant-tooltip-placement-bottom > div.ant-tooltip-content,
+html.light:not(.dark) body.light:not(.dark) div.ant-tooltip.ant-tooltip-placement-top > div.ant-tooltip-content,
+html.light:not(.dark) body.light:not(.dark) div.ant-tooltip.ant-tooltip-placement-left > div.ant-tooltip-content,
+html.light:not(.dark) body.light:not(.dark) div.ant-tooltip.ant-tooltip-placement-right > div.ant-tooltip-content,
+html.light:not(.dark) body.light:not(.dark) div.ant-tooltip > div.ant-tooltip-content > div.ant-tooltip-inner {
+  background: #FFFFFF !important;
+  background-color: #FFFFFF !important;
+  color: #0F172A !important;
+}
+/* 箭头：同样三层 specificity 叠加 */
+html.light .ant-tooltip .ant-tooltip-arrow::before,
+body.light .ant-tooltip .ant-tooltip-arrow::before,
+html.light body.light div.ant-tooltip > div.ant-tooltip-content > div.ant-tooltip-arrow::before {
+  background-color: #FFFFFF !important;
+  background: #FFFFFF !important;
+}
+/* 浅色模式箭头边框统一（避免浅色边框露馅） */
+html.light .ant-tooltip-placement-top .ant-tooltip-arrow::before,
+html.light .ant-tooltip-placement-topLeft .ant-tooltip-arrow::before,
+html.light .ant-tooltip-placement-topRight .ant-tooltip-arrow::before {
+  border-bottom-color: rgba(15, 23, 42, 0.12) !important;
+  border-right-color: rgba(15, 23, 42, 0.12) !important;
+}
+html.light .ant-tooltip-placement-bottom .ant-tooltip-arrow::before,
+html.light .ant-tooltip-placement-bottomLeft .ant-tooltip-arrow::before,
+html.light .ant-tooltip-placement-bottomRight .ant-tooltip-arrow::before {
+  border-top-color: rgba(15, 23, 42, 0.12) !important;
+  border-left-color: rgba(15, 23, 42, 0.12) !important;
+}
+html.light .ant-tooltip-placement-left .ant-tooltip-arrow::before {
+  border-right-color: rgba(15, 23, 42, 0.12) !important;
+  border-top-color: rgba(15, 23, 42, 0.12) !important;
+}
+html.light .ant-tooltip-placement-right .ant-tooltip-arrow::before {
+  border-left-color: rgba(15, 23, 42, 0.12) !important;
+  border-bottom-color: rgba(15, 23, 42, 0.12) !important;
+}
+/* 终极兜底：Tooltip 内所有元素的文字强制黑色，防止被任何样式洗白 */
+html.light .ant-tooltip *,
+html.light .ant-tooltip-inner *,
+html.light div[class*="ant-tooltip"] div[class*="-inner"] * {
+  color: #0F172A !important;
+  -webkit-text-fill-color: #0F172A !important;
+}
+html.dark .ant-tooltip *,
+html.dark .ant-tooltip-inner *,
+html.dark div[class*="ant-tooltip"] div[class*="-inner"] * {
+  color: #E8EAED !important;
+  -webkit-text-fill-color: #E8EAED !important;
+}
+
+/* =============================================
+   ====== 日志列头 ======
+   ============================================= */
+.log-column-header {
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, Monaco, monospace;
+  font-size: 11px;
+  color: var(--ls-text-secondary);
+  letter-spacing: 0.02em;
+}
+
+.log-col-label {
+  position: relative;
+  padding-right: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.log-col-label-text {
+  pointer-events: none;
+}
+
+.col-resize-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  cursor: col-resize;
+  z-index: 2;
+}
+.col-resize-handle:hover {
+  background: var(--ls-border-brand);
+}
+
+.log-col-settings-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ls-text-tertiary);
+  cursor: pointer;
+  font-size: 12px;
+  margin-left: 4px;
+  transition: all 0.15s;
+}
+.log-col-settings-btn:hover {
+  background: var(--ls-bg-hover);
+  color: var(--ls-text-secondary);
+}
+
+/* =============================================
+   ====== 侧边栏收起/展开按钮动画 ======
+   ============================================= */
+.sider-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ls-bg-hover) !important;
+  border: 1px solid var(--ls-border-l1) !important;
+  color: var(--ls-text-secondary) !important;
+  transition: all 0.2s cubic-bezier(.2,.8,.2,1);
+}
+.sider-toggle-btn:hover {
+  background: var(--ls-border-l2) !important;
+  border-color: var(--ls-border-brand) !important;
+  color: var(--ls-text-primary) !important;
+  transform: scale(1.08);
+}
+.sider-toggle-btn:active {
+  transform: scale(0.95);
+}
+.sider-toggle-icon {
+  display: inline-flex;
+  transition: transform 0.3s cubic-bezier(.2,.8,.2,1);
+}
+
+

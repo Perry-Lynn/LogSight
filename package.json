@@ -1,0 +1,41 @@
+{
+  "name": "logsight",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:restart": "lsof -ti:1420 | xargs kill -9 2>/dev/null; pkill -9 -f 'target/debug/logsight' 2>/dev/null; pkill -9 -f 'cargo run' 2>/dev/null; while lsof -ti:1420 >/dev/null 2>&1; do sleep 0.5; done; tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "@ant-design/icons": "*",
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-clipboard-manager": "^2.3.3",
+    "@tauri-apps/plugin-dialog": "^2.0.0",
+    "@tauri-apps/plugin-shell": "^2.0.0",
+    "antd": "*",
+    "dayjs": "*",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "zustand": "*"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@types/react-window": "*",
+    "@vitejs/plugin-react": "*",
+    "autoprefixer": "*",
+    "esbuild": "^0.28.2",
+    "postcss": "*",
+    "react-window": "^1.8.11",
+    "tailwindcss": "^3.4.19",
+    "typescript": "*",
+    "vite": "*"
+  }
+}

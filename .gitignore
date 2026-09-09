@@ -1,0 +1,11 @@
+node_modules
+dist
+dist-ssr
+.DS_Store
+.idea
+.workbuddy
+vibe_images
+*.design
+src-tauri/icons/icon.png.bak
+src-tauri/target
+src-tauri/Cargo.lock
