@@ -1,4 +1,4 @@
-name: Windows Release
+name: Desktop Release
 
 on:
   push:
@@ -7,17 +7,27 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '要构建并上传的 Release 标签，例如 v0.2.1'
+        description: '要构建并上传的 Release 标签，例如 v0.2.2'
         required: true
-        default: 'v0.2.1'
+        default: 'v0.2.2'
 
 permissions:
   contents: write
 
 jobs:
-  build-windows:
-    name: Build Windows installers
-    runs-on: windows-latest
+  build-desktop:
+    name: Build ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS Apple Silicon
+            os: macos-14
+            target: aarch64-apple-darwin
+          - name: Windows x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v4
@@ -25,12 +35,13 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - name: Check release version
-        shell: pwsh
+        shell: bash
         run: |
-          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $releaseTag = "${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
-          if ($releaseTag -ne "v$packageVersion") {
-            throw "Release tag $releaseTag does not match package version v$packageVersion"
+          package_version=$(node -p "require('./package.json').version")
+          release_tag="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          test "$release_tag" = "v$package_version" || {
+            echo "Release tag $release_tag does not match package version v$package_version"
+            exit 1
           }
 
       - name: Setup Node.js
@@ -45,9 +56,9 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-msvc
+          targets: ${{ matrix.target }}
 
-      - name: Build and upload Windows Release
+      - name: Build and upload desktop Release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -55,9 +66,9 @@ jobs:
           tagName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           releaseName: LogSight ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           releaseBody: |
-            Windows 安装包由 GitHub Actions 自动构建。
+            LogSight 桌面安装包由 GitHub Actions 自动构建。
 
-            - MSI 安装包适用于企业部署和系统安装。
-            - setup.exe 适用于普通用户快速安装。
+            - macOS：DMG 安装包，适用于 Apple Silicon。
+            - Windows：MSI 和 setup.exe 安装包。
           releaseDraft: false
           prerelease: false
