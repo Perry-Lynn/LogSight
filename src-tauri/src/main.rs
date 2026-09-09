@@ -39,6 +39,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             // master password
             commands::get_or_create_master_password,
+            commands::reset_master_password,
             commands::decrypt_secret,
             // server CRUD
             commands::save_server,

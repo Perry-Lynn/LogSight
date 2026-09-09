@@ -37,6 +37,10 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 export const getOrCreateMasterPassword = (): Promise<string> =>
   call<string>('get_or_create_master_password');
 
+/** 用户确认旧钥匙串不可恢复后，重建应用主密钥；旧密文需要重新录入凭据 */
+export const resetMasterPassword = (): Promise<string> =>
+  call<string>('reset_master_password');
+
 /** 解密密文为明文（密码/私钥等） */
 export const decryptSecret = (cipherB64: string, masterPassword: string): Promise<string> =>
   call<string>('decrypt_secret', { cipherB64, masterPassword });

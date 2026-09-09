@@ -29,6 +29,7 @@ import LogViewerTabs from '@/components/LogViewerTabs';
 import type { ServerConfig, LogTab } from '@/types';
 import {
   getOrCreateMasterPassword,
+  resetMasterPassword,
   listServers,
   decryptSecret,
   saveServer,
@@ -44,7 +45,7 @@ const { Header, Content } = Layout;
  * LogSight 应用主布局组件类
  */
 const AppInner: React.FC = () => {
-  const { message } = AntApp.useApp();
+  const { message, modal } = AntApp.useApp();
   const theme = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
   const toggleTheme = useAppStore((s) => s.toggleTheme);
@@ -94,31 +95,54 @@ const AppInner: React.FC = () => {
     if (initializationStartedRef.current) return;
     initializationStartedRef.current = true;
 
+    const loadServersWithSecrets = async (master: string) => {
+      appMasterPwdRef.current = master;
+      setMasterPassword(master);
+      const list = await listServers();
+      setServers(list);
+      // 解密各服务器的密码/私钥缓存到内存
+      for (const s of list) {
+        try {
+          if (s.password_cipher) {
+            const pwd = await decryptSecret(s.password_cipher, master);
+            setSecret(s.id, pwd);
+          }
+          if (s.private_key_cipher) {
+            const pem = await decryptSecret(s.private_key_cipher, master);
+            setSecret(s.id, undefined, pem);
+          }
+        } catch (_) { /* 解密失败不阻塞，用户可编辑服务器重新录入凭据 */ }
+      }
+    };
+
     (async () => {
       try {
         const master = await getOrCreateMasterPassword();
-        appMasterPwdRef.current = master;
-        setMasterPassword(master);
-        const list = await listServers();
-        setServers(list);
-        // 解密各服务器的密码/私钥缓存到内存
-        for (const s of list) {
-          try {
-            if (s.password_cipher) {
-              const pwd = await decryptSecret(s.password_cipher, master);
-              setSecret(s.id, pwd);
-            }
-            if (s.private_key_cipher) {
-              const pem = await decryptSecret(s.private_key_cipher, master);
-              setSecret(s.id, undefined, pem);
-            }
-          } catch (_) { /* 解密失败不阻塞 */ }
-        }
+        await loadServersWithSecrets(master);
       } catch (e: any) {
-        message.error(`初始化失败：${e?.message || '请检查 Rust 后端是否正常编译运行'}`);
+        const errorText = e?.message || '请检查 Rust 后端是否正常编译运行';
+        message.error(`初始化失败：${errorText}`);
+        if (String(errorText).includes('系统钥匙串中找不到应用主密钥')) {
+          modal.confirm({
+            title: '本地密钥不可用',
+            content: '无法从系统钥匙串恢复旧的应用主密钥。可以先取消并恢复钥匙串；如果确认无法恢复，可重建本地密钥。重建后服务器地址等配置会保留，但旧密码和私钥密文需要重新录入。',
+            okText: '重建本地密钥',
+            cancelText: '稍后处理',
+            okButtonProps: { danger: true },
+            onOk: async () => {
+              try {
+                const master = await resetMasterPassword();
+                await loadServersWithSecrets(master);
+                message.success('本地密钥已重建；请编辑已有服务器，重新录入密码或私钥');
+              } catch (resetError: any) {
+                message.error(`重建失败：${resetError?.message || '请稍后重试'}`);
+              }
+            },
+          });
+        }
       }
     })();
-  }, [setMasterPassword, setServers, setSecret, message]);
+  }, [setMasterPassword, setServers, setSecret, message, modal]);
 
   /** 注册 Tauri 事件：后端会话状态变化 + 日志行批量推送 */
   useEffect(() => {
@@ -209,29 +233,44 @@ const AppInner: React.FC = () => {
     input.accept = '.json,application/json';
     input.onchange = async () => {
       const f = input.files?.[0];
-      if (!f || !appMasterPwdRef.current) return;
+      if (!f) return;
+      if (!appMasterPwdRef.current) {
+        message.error('应用主密钥尚未恢复，暂不能导入。请先完成启动恢复流程。');
+        return;
+      }
       try {
         const text = await f.text();
         const arr = JSON.parse(text) as ServerConfig[];
         if (!Array.isArray(arr)) throw new Error('文件格式错误');
         let ok = 0;
+        let locked = 0;
         for (const s of arr) {
           if (!s.id || !s.host) continue;
-          addOrUpdateServer(s);
-          // 尝试解密入缓存
+          let passwordPlain: string | null = null;
+          let privateKeyPemPlain: string | null = null;
           try {
             if (s.password_cipher) {
-              const pwd = await decryptSecret(s.password_cipher, appMasterPwdRef.current);
-              setSecret(s.id, pwd);
+              passwordPlain = await decryptSecret(s.password_cipher, appMasterPwdRef.current);
             }
             if (s.private_key_cipher) {
-              const pem = await decryptSecret(s.private_key_cipher, appMasterPwdRef.current);
-              setSecret(s.id, undefined, pem);
+              privateKeyPemPlain = await decryptSecret(s.private_key_cipher, appMasterPwdRef.current);
             }
-          } catch (_) { /* ignore */ }
+          } catch (_) {
+            // 跨安装导入的密文可能属于另一把主密钥；先保留配置，提示用户重新录入凭据。
+            locked++;
+          }
+          const saved = await saveServer(
+            s,
+            passwordPlain,
+            privateKeyPemPlain,
+            appMasterPwdRef.current,
+          );
+          addOrUpdateServer(saved);
+          if (passwordPlain) setSecret(saved.id, passwordPlain);
+          if (privateKeyPemPlain) setSecret(saved.id, undefined, privateKeyPemPlain);
           ok++;
         }
-        message.success(`成功导入 ${ok} 台服务器`);
+        message.success(`成功导入 ${ok} 台服务器${locked ? `，其中 ${locked} 台凭据需要重新录入` : ''}`);
       } catch (e: any) {
         message.error(e?.message || '导入失败');
       }

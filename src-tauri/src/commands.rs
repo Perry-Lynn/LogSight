@@ -82,6 +82,38 @@ pub async fn get_or_create_master_password(app: AppHandle) -> ApiResponse<String
     }
 }
 
+/*
+ * 命令：重建系统钥匙串中的应用主密钥。
+ * 仅在用户明确确认钥匙串无法恢复时调用；服务器配置记录会保留，但旧密文无法用新密钥解密。
+ */
+#[command]
+pub async fn reset_master_password(app: AppHandle) -> ApiResponse<String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("./"));
+    let storage = match StorageService::init(data_dir) {
+        Ok(s) => s,
+        Err(e) => return ApiResponse::err(format!("初始化存储失败: {:#}", e)),
+    };
+    let entry = match Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
+        Ok(entry) => entry,
+        Err(e) => return ApiResponse::err(format!("初始化系统钥匙串失败: {e}")),
+    };
+    let master = CryptoService::generate_app_master_password();
+    let sentinel = match CryptoService::new().encrypt_str("LOGSIGHT_OK", &master) {
+        Ok(value) => value,
+        Err(e) => return ApiResponse::err(format!("生成主密钥校验值失败: {:#}", e)),
+    };
+    if let Err(e) = entry.set_password(&master) {
+        return ApiResponse::err(format!("保存系统钥匙串失败: {e}"));
+    }
+    if let Err(e) = storage.set_master_sentinel(&sentinel) {
+        return ApiResponse::err(format!("保存主密钥校验值失败: {:#}", e));
+    }
+    ApiResponse::ok(master)
+}
+
 /* ===== 服务器配置 CRUD 命令 ===== */
 
 /*
