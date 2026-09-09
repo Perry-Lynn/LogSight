@@ -1,0 +1,46 @@
+name: Bug report
+description: Report a reproducible problem in LogSight
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先确认问题可以在最新 Release 中复现，并删除日志、主机地址和凭据等敏感信息。
+  - type: textarea
+    id: summary
+    attributes:
+      label: 问题描述
+      description: 请说明发生了什么，以及你期望发生什么。
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: LogSight 版本
+      placeholder: 例如 v0.2.2
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 客户端平台
+      options:
+        - macOS Apple Silicon
+        - Windows x64
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请按顺序列出操作步骤。
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 脱敏后的错误信息
+      render: text

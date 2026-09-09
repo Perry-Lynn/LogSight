@@ -1,8 +1,30 @@
 # LogSight
 
-LogSight 是一个开放的桌面端远程日志查看工具：通过 SSH 连接服务器，在本地实时查看、搜索和分析日志文件。
+> 一个面向开发者与运维人员的 SSH 远程日志查看工具：不反复登录终端，也能在桌面端实时追踪、检索和分析服务器日志。
 
-它适合开发、测试、运维和支持人员处理“日志在远程服务器上，但又不想为了排查问题反复登录终端”的场景。
+[![Latest Release](https://img.shields.io/github/v/release/Perry-Lynn/LogSight?display_name=tag&sort=semver)](https://github.com/Perry-Lynn/LogSight/releases/latest)
+[![CI](https://github.com/Perry-Lynn/LogSight/actions/workflows/ci.yml/badge.svg)](https://github.com/Perry-Lynn/LogSight/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/Perry-Lynn/LogSight)](LICENSE)
+
+[下载最新版](https://github.com/Perry-Lynn/LogSight/releases/latest) · [查看全部版本](https://github.com/Perry-Lynn/LogSight/releases) · [报告问题](https://github.com/Perry-Lynn/LogSight/issues/new/choose)
+
+LogSight 适合开发、测试、运维和技术支持人员处理“日志在远程服务器上，但又不想为了排查问题反复登录终端”的场景。日志直接通过 SSH 读取并在本地界面处理，不要求上传到第三方平台。
+
+<p align="center">
+  <img src="docs/assets/logsight-source-probe.png" alt="LogSight remote log source detection" width="860" />
+</p>
+
+_界面示意：探测远程日志源并快速进入实时查看。_
+
+## English
+
+LogSight is an open-source desktop **SSH remote log viewer** for developers and operations teams. It helps you inspect remote server logs without repeatedly switching to a terminal.
+
+Key capabilities include live `tail -F`, historical search, rolling-log source detection, keyword/regex/level filters, Trace ID lookup, Java stack-trace folding, multi-server tabs, and local export.
+
+The application reads logs over SSH and processes them locally. It does not require uploading logs to a hosted service. The current remote command channel is optimized for Linux/Unix servers; Windows remote-server support is planned separately.
+
+**Keywords:** `remote log viewer` · `SSH` · `Logback` · `Trace ID` · `live log tailing` · `Tauri` · `Rust` · `React` · `macOS` · `Windows`
 
 ## 为什么使用 LogSight
 
@@ -113,4 +135,5 @@ src-tauri/icons/     桌面应用图标资源
 <p align="center">
   <img src="docs/assets/donation-alipay.png" alt="支付宝随缘打赏" width="320" />
   <img src="docs/assets/donation-wechat.png" alt="微信随缘打赏" width="320" />
+  <img src="docs/assets/donation-paypal.png" alt="PayPal 随缘打赏" width="320" />
 </p>
