@@ -37,6 +37,8 @@ import {
   getServer,
   saveServer,
   testConnection,
+  inspectHostKey,
+  trustHostKey,
   decryptSecret,
   importLogbackConfig,
   getLogbackConfig,
@@ -80,7 +82,7 @@ const ServerConnectionDialog: React.FC<Props> = ({
   onCancel,
   onSaved,
 }) => {
-  const { message: msg } = AntApp.useApp();
+  const { message: msg, modal } = AntApp.useApp();
   const [form] = Form.useForm<FormValues>();
   const masterPassword = useAppStore((s) => s.masterPassword);
   const setSecret = useAppStore((s) => s.setSecret);
@@ -334,7 +336,56 @@ const ServerConnectionDialog: React.FC<Props> = ({
           msg.warning(res.remote_environment.message || 'SSH 已连接，但当前远程环境不满足日志命令要求');
         }
       } else {
-        msg.error(`连接失败：${res.error_message ?? '未知错误'}`);
+        const errorMessage = res.error_message ?? '未知错误';
+        const isHostKeyProblem = errorMessage.includes('known_hosts') || errorMessage.includes('主机指纹发生变化');
+        if (!isHostKeyProblem) {
+          msg.error(`连接失败：${errorMessage}`);
+          return;
+        }
+
+        const hostKey = await inspectHostKey(snapshot);
+        const changed = hostKey.status === 'mismatch';
+        modal.confirm({
+          title: changed ? 'SSH 主机指纹已变化' : '确认 SSH 主机指纹',
+          width: 560,
+          content: (
+            <div>
+              <p>
+                {changed
+                  ? '本机保存的主机密钥与服务器当前密钥不一致。请先通过服务器管理员或控制台核对指纹，确认服务器确实重装或更换过密钥。'
+                  : '这是本机首次连接该 SSH 主机。请通过可信渠道核对以下指纹。'}
+              </p>
+              <div style={{ padding: '10px 12px', background: '#f5f5f5', borderRadius: 6 }}>
+                <div><strong>主机：</strong>{hostKey.host}</div>
+                <div style={{ marginTop: 6, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                  <strong>SHA-256：</strong>{hostKey.fingerprint}
+                </div>
+              </div>
+              <p style={{ marginTop: 12, color: changed ? '#cf1322' : undefined }}>
+                无法确认时请取消，继续信任错误的指纹可能暴露登录凭据。
+              </p>
+            </div>
+          ),
+          okText: changed ? '指纹已核对，更新信任' : '指纹已核对，信任主机',
+          cancelText: '取消',
+          okButtonProps: changed ? { danger: true } : undefined,
+          onOk: async () => {
+            setTesting(true);
+            try {
+              await trustHostKey(snapshot, hostKey.fingerprint);
+              const retry = await testConnection(snapshot, pwd_plain, pem_plain);
+              if (!retry.success) {
+                throw new Error(retry.error_message || '信任主机后连接仍失败');
+              }
+              msg.success(`主机指纹已保存，连接成功！延迟 ${retry.latency_ms} ms`);
+            } catch (trustError: any) {
+              msg.error(trustError?.message || '更新主机信任失败');
+              throw trustError;
+            } finally {
+              setTesting(false);
+            }
+          },
+        });
       }
     } catch (e: any) {
       msg.error(e?.message || '测试失败');

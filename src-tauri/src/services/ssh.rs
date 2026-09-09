@@ -10,7 +10,7 @@ use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use ssh2::{CheckResult, HashType, KeyboardInteractivePrompt, KnownHostFileKind, Session};
 use std::io::Read;
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -19,8 +19,8 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use crate::models::{
-    AuthType, ConnectTestResult, DirEntry, DirListResult, FileKind, PathValidateResult,
-    RemoteEnvironment, ServerConfig,
+    AuthType, ConnectTestResult, DirEntry, DirListResult, FileKind, HostKeyInfo, HostKeyStatus,
+    PathValidateResult, RemoteEnvironment, ServerConfig,
 };
 
 const REMOTE_ENVIRONMENT_PROBE: &str = r#"printf 'os=%s\n' "$(uname -s 2>/dev/null || printf unknown)"; printf 'shell=%s\n' "${SHELL:-unknown}"; for c in tail grep awk find stat; do if command -v "$c" >/dev/null 2>&1; then printf 'cmd=%s|yes\n' "$c"; else printf 'cmd=%s|no\n' "$c"; fi; done; if command -v stat >/dev/null 2>&1 && stat -c %Y / >/dev/null 2>&1; then printf 'stat_gnu=yes\n'; else printf 'stat_gnu=no\n'; fi"#;
@@ -211,7 +211,167 @@ fn verify_host_key(sess: &Session, server: &ServerConfig) -> Result<()> {
     }
 }
 
+fn known_host_name(server: &ServerConfig) -> String {
+    if server.port == 22 {
+        server.host.clone()
+    } else {
+        format!("[{}]:{}", server.host, server.port)
+    }
+}
+
+fn known_hosts_path() -> PathBuf {
+    PathBuf::from(shellexpand::tilde("~/.ssh/known_hosts").to_string())
+}
+
+fn handshake_for_host_key(server: &ServerConfig) -> Result<(Session, TcpStream)> {
+    let mut addresses = (server.host.as_str(), server.port)
+        .to_socket_addrs()
+        .with_context(|| format!("无法解析主机 {}:{}", server.host, server.port))?;
+    let address = addresses
+        .next()
+        .ok_or_else(|| anyhow!("主机 {} 没有可用地址", server.host))?;
+    let tcp = TcpStream::connect_timeout(&address, Duration::from_secs(15)).with_context(|| {
+        format!(
+            "无法连接到 {}:{} (TCP超时或拒绝连接)",
+            server.host, server.port
+        )
+    })?;
+    tcp.set_read_timeout(Some(Duration::from_secs(30)))?;
+    tcp.set_write_timeout(Some(Duration::from_secs(30)))?;
+    let mut session = Session::new().context("创建 libssh2 Session 失败")?;
+    session.set_tcp_stream(tcp.try_clone().context("克隆 TCP 流失败")?);
+    session
+        .handshake()
+        .context("SSH 协议握手失败，可能不是 SSH 服务或网络中断")?;
+    Ok((session, tcp))
+}
+
+fn inspect_host_key_session(session: &Session, server: &ServerConfig) -> Result<HostKeyInfo> {
+    let (key, _) = session
+        .host_key()
+        .ok_or_else(|| anyhow!("SSH 服务端没有提供主机公钥"))?;
+    let fingerprint = session
+        .host_key_hash(HashType::Sha256)
+        .map(|hash| format!("SHA256:{}", B64.encode(hash)))
+        .ok_or_else(|| anyhow!("无法计算 SSH 主机指纹"))?;
+    let path = known_hosts_path();
+    let status = if path.is_file() {
+        let mut known_hosts = session
+            .known_hosts()
+            .context("初始化 SSH known_hosts 失败")?;
+        known_hosts
+            .read_file(&path, KnownHostFileKind::OpenSSH)
+            .with_context(|| format!("读取 known_hosts 失败: {:?}", path))?;
+        match known_hosts.check(&known_host_name(server), key) {
+            CheckResult::Match => HostKeyStatus::Match,
+            CheckResult::NotFound => HostKeyStatus::NotFound,
+            CheckResult::Mismatch => HostKeyStatus::Mismatch,
+            CheckResult::Failure => return Err(anyhow!("校验 SSH 主机指纹失败")),
+        }
+    } else {
+        HostKeyStatus::NotFound
+    };
+    Ok(HostKeyInfo {
+        host: known_host_name(server),
+        fingerprint,
+        status,
+    })
+}
+
 impl SSHService {
+    /* 只完成 SSH 握手并读取主机密钥，不发送用户名、密码或私钥。 */
+    pub async fn inspect_host_key(server: &ServerConfig) -> Result<HostKeyInfo> {
+        let server = server.clone();
+        tokio::task::spawn_blocking(move || {
+            let (session, _tcp) = handshake_for_host_key(&server)?;
+            inspect_host_key_session(&session, &server)
+        })
+        .await
+        .map_err(|e| anyhow!("SSH 主机指纹检查任务 Panic: {e}"))?
+    }
+
+    /*
+     * 用用户刚确认的指纹更新 known_hosts。
+     * 写入前重新握手并比对 expected_fingerprint，避免确认后主机密钥再次变化。
+     */
+    pub async fn trust_host_key(
+        server: &ServerConfig,
+        expected_fingerprint: &str,
+    ) -> Result<HostKeyInfo> {
+        let server = server.clone();
+        let expected = expected_fingerprint.to_string();
+        tokio::task::spawn_blocking(move || {
+            let (session, _tcp) = handshake_for_host_key(&server)?;
+            let current = inspect_host_key_session(&session, &server)?;
+            if current.fingerprint != expected {
+                return Err(anyhow!(
+                    "主机指纹在确认期间再次变化，已拒绝写入。期望 {}，当前 {}",
+                    expected,
+                    current.fingerprint
+                ));
+            }
+            if current.status == HostKeyStatus::Match {
+                return Ok(current);
+            }
+
+            let (key, key_type) = session
+                .host_key()
+                .ok_or_else(|| anyhow!("SSH 服务端没有提供主机公钥"))?;
+            let path = known_hosts_path();
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("创建 SSH 配置目录失败: {:?}", parent))?;
+            }
+            let mut known_hosts = session
+                .known_hosts()
+                .context("初始化 SSH known_hosts 失败")?;
+            if path.is_file() {
+                known_hosts
+                    .read_file(&path, KnownHostFileKind::OpenSSH)
+                    .with_context(|| format!("读取 known_hosts 失败: {:?}", path))?;
+            }
+
+            let host = known_host_name(&server);
+            let matching_entries = known_hosts
+                .iter()
+                .context("枚举 known_hosts 记录失败")?
+                .into_iter()
+                .filter(|entry| entry.name() == Some(host.as_str()))
+                .collect::<Vec<_>>();
+            if current.status == HostKeyStatus::Mismatch && matching_entries.is_empty() {
+                return Err(anyhow!(
+                    "发现无法安全定位的旧主机记录；请先执行 ssh-keygen -R {} 后重试",
+                    host
+                ));
+            }
+            for entry in &matching_entries {
+                known_hosts
+                    .remove(entry)
+                    .context("移除旧 SSH 主机密钥失败")?;
+            }
+            known_hosts
+                .add(&host, key, "", key_type.into())
+                .context("添加 SSH 主机密钥失败")?;
+            known_hosts
+                .write_file(&path, KnownHostFileKind::OpenSSH)
+                .with_context(|| format!("写入 known_hosts 失败: {:?}", path))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                    .with_context(|| format!("设置 known_hosts 权限失败: {:?}", path))?;
+            }
+
+            let verified = inspect_host_key_session(&session, &server)?;
+            if verified.status != HostKeyStatus::Match {
+                return Err(anyhow!("known_hosts 写入后校验未通过"));
+            }
+            Ok(verified)
+        })
+        .await
+        .map_err(|e| anyhow!("SSH 主机信任更新任务 Panic: {e}"))?
+    }
+
     /*
      * 解析用户主目录：SSH 登录后执行 echo $HOME 一次性拿到
      * 用于前端点击「家目录」按钮直接跳转到 ~
@@ -948,5 +1108,16 @@ mod tests {
         assert!(!unsupported.supported);
         assert!(unsupported.missing_commands.contains(&"tail".to_string()));
         assert!(unsupported.message.unwrap().contains("command not found"));
+    }
+
+    #[test]
+    fn known_host_name_uses_openssh_port_format() {
+        let mut server = ServerConfig::default();
+        server.host = "log.example.com".to_string();
+        server.port = 22;
+        assert_eq!(known_host_name(&server), "log.example.com");
+
+        server.port = 2222;
+        assert_eq!(known_host_name(&server), "[log.example.com]:2222");
     }
 }

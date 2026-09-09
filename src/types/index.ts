@@ -121,6 +121,13 @@ export interface ConnectTestResult {
   remote_environment?: RemoteEnvironment | null;
 }
 
+/** SSH 主机指纹与本机 known_hosts 的比对结果 */
+export interface HostKeyInfo {
+  host: string;
+  fingerprint: string;
+  status: 'match' | 'not_found' | 'mismatch';
+}
+
 /** 远程日志命令能力探测结果 */
 export interface RemoteEnvironment {
   os: string;

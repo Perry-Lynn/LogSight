@@ -318,6 +318,25 @@ pub struct ConnectTestResult {
 }
 
 /*
+ * SSH 主机密钥检查结果。
+ * 首次连接或指纹变化时返回给前端，由用户核对后显式确认信任。
+ */
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostKeyInfo {
+    pub host: String,
+    pub fingerprint: String,
+    pub status: HostKeyStatus,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HostKeyStatus {
+    Match,
+    NotFound,
+    Mismatch,
+}
+
+/*
  * 远程日志能力探测结果。
  * 当前日志命令通道以 POSIX/Unix 远程环境为第一支持目标，
  * 先把“SSH 能连通”和“日志功能可用”拆开，避免把环境不兼容误报成路径错误。

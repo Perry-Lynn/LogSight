@@ -10,6 +10,7 @@ import type {
   ServerConfig,
   ApiResponse,
   ConnectTestResult,
+  HostKeyInfo,
   LogLine,
   DirListResult,
   PathValidateResult,
@@ -107,6 +108,17 @@ export const testConnection = (
     passwordPlain,
     privateKeyPemPlain,
   });
+
+/** 只读取远端 SSH 主机指纹，不提交登录凭据 */
+export const inspectHostKey = (server: ServerConfig): Promise<HostKeyInfo> =>
+  call<HostKeyInfo>('inspect_host_key', { server });
+
+/** 用户核对后显式信任当前主机指纹 */
+export const trustHostKey = (
+  server: ServerConfig,
+  expectedFingerprint: string,
+): Promise<HostKeyInfo> =>
+  call<HostKeyInfo>('trust_host_key', { server, expectedFingerprint });
 
 /* ================= 日志流 ================= */
 

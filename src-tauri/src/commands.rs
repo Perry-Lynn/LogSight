@@ -6,12 +6,12 @@
  * @LastEditors: fu
  * @Date: 2026-08-26
  */
-use keyring::Entry;
+use keyring::{Entry, Error as KeyringError};
 use std::path::PathBuf;
 use tauri::{command, AppHandle, Manager};
 
 use crate::models::{
-    ApiResponse, ConnectTestResult, DirListResult, LogLine, LogSourceProbeResult,
+    ApiResponse, ConnectTestResult, DirListResult, HostKeyInfo, LogLine, LogSourceProbeResult,
     LogbackServerConfig, PathValidateResult, ServerConfig,
 };
 use crate::services::logback_parser::parse_logback_xml;
@@ -21,6 +21,19 @@ use crate::services::{CryptoService, LogStreamService, SSHService, StorageServic
 
 const KEYRING_SERVICE: &str = "com.fu.logsight";
 const KEYRING_ACCOUNT: &str = "app-master-password";
+
+fn save_and_verify_master_password(entry: &Entry, master: &str) -> Result<(), String> {
+    entry
+        .set_password(master)
+        .map_err(|e| format!("保存系统钥匙串失败: {e}"))?;
+    let stored = entry
+        .get_password()
+        .map_err(|e| format!("系统钥匙串写入后读取校验失败: {e}"))?;
+    if stored != master {
+        return Err("系统钥匙串写入校验失败：读取到的主密钥不一致".to_string());
+    }
+    Ok(())
+}
 
 /*
  * 命令：获取应用主密码。
@@ -41,14 +54,20 @@ pub async fn get_or_create_master_password(app: AppHandle) -> ApiResponse<String
         Err(e) => return ApiResponse::err(format!("初始化系统钥匙串失败: {e}")),
     };
 
-    if let Ok(master) = entry.get_password() {
-        return ApiResponse::ok(master);
+    match entry.get_password() {
+        Ok(master) => return ApiResponse::ok(master),
+        Err(KeyringError::NoEntry) => {}
+        Err(e) => {
+            return ApiResponse::err(format!(
+                "读取系统钥匙串失败: {e}；请确认系统钥匙串已解锁且允许本应用访问"
+            ))
+        }
     }
 
     // 从 v0.2 的旧存储迁移一次，迁移成功后立即删除旧明文记录。
     match storage.get_setting("app_master_key") {
         Ok(Some(legacy_master)) => {
-            if let Err(e) = entry.set_password(&legacy_master) {
+            if let Err(e) = save_and_verify_master_password(&entry, &legacy_master) {
                 return ApiResponse::err(format!("迁移系统钥匙串失败: {e}"));
             }
             let _ = storage.delete_setting("app_master_key");
@@ -65,7 +84,7 @@ pub async fn get_or_create_master_password(app: AppHandle) -> ApiResponse<String
         Ok(None) => {
             let crypto = CryptoService::new();
             let master = CryptoService::generate_app_master_password();
-            match entry.set_password(&master) {
+            match save_and_verify_master_password(&entry, &master) {
                 Ok(()) => match crypto.encrypt_str("LOGSIGHT_OK", &master) {
                     Ok(sentinel) => {
                         if let Err(e) = storage.set_master_sentinel(&sentinel) {
@@ -75,7 +94,7 @@ pub async fn get_or_create_master_password(app: AppHandle) -> ApiResponse<String
                     }
                     Err(e) => ApiResponse::err(format!("生成主密码失败: {:#}", e)),
                 },
-                Err(e) => ApiResponse::err(format!("保存系统钥匙串失败: {e}")),
+                Err(e) => ApiResponse::err(e),
             }
         }
         Err(e) => ApiResponse::err(format!("读取设置失败: {:#}", e)),
@@ -105,8 +124,8 @@ pub async fn reset_master_password(app: AppHandle) -> ApiResponse<String> {
         Ok(value) => value,
         Err(e) => return ApiResponse::err(format!("生成主密钥校验值失败: {:#}", e)),
     };
-    if let Err(e) = entry.set_password(&master) {
-        return ApiResponse::err(format!("保存系统钥匙串失败: {e}"));
+    if let Err(e) = save_and_verify_master_password(&entry, &master) {
+        return ApiResponse::err(e);
     }
     if let Err(e) = storage.set_master_sentinel(&sentinel) {
         return ApiResponse::err(format!("保存主密钥校验值失败: {:#}", e));
@@ -242,6 +261,27 @@ pub async fn test_connection(
     )
     .await;
     ApiResponse::ok(res)
+}
+
+/* 获取当前 SSH 主机指纹及本机信任状态，不执行登录认证。 */
+#[command]
+pub async fn inspect_host_key(server: ServerConfig) -> ApiResponse<HostKeyInfo> {
+    match SSHService::inspect_host_key(&server).await {
+        Ok(info) => ApiResponse::ok(info),
+        Err(e) => ApiResponse::err(format!("读取 SSH 主机指纹失败: {:#}", e)),
+    }
+}
+
+/* 用户核对指纹并明确确认后，更新本机 known_hosts 记录。 */
+#[command]
+pub async fn trust_host_key(
+    server: ServerConfig,
+    expected_fingerprint: String,
+) -> ApiResponse<HostKeyInfo> {
+    match SSHService::trust_host_key(&server, &expected_fingerprint).await {
+        Ok(info) => ApiResponse::ok(info),
+        Err(e) => ApiResponse::err(format!("更新 SSH 主机信任失败: {:#}", e)),
+    }
 }
 
 /*

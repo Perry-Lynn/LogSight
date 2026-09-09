@@ -48,6 +48,8 @@ fn main() {
             commands::delete_server,
             // ssh connection
             commands::test_connection,
+            commands::inspect_host_key,
+            commands::trust_host_key,
             // log stream
             commands::start_tail,
             commands::stop_tail,
