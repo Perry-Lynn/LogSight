@@ -715,18 +715,19 @@ impl LogStreamService {
         /* 所有 glob_path 已经是绝对路径，无需 cd 到 base_dir */
         let mut script = String::new();
         for p in &presets {
+            prevalidate_glob_path_str(&p.glob_path)
+                .map_err(|e| anyhow!("日志源路径不安全（{}）：{}", p.key, e))?;
             script.push_str(&format!(
                 "n=$(ls -1 -- {pat} 2>/dev/null | wc -l | tr -d ' '); \
                  sz=$(du -cb -- {pat} 2>/dev/null | tail -1 | cut -f1); \
                  last=$(ls -t -- {pat} 2>/dev/null | head -1); \
                  mt=$(stat -c %Y -- \"$last\" 2>/dev/null || echo 0); \
-                 echo \"{key}|$n|$sz|$last|$mt\"\n",
-                pat = shell_escape(&p.glob_path),
-                key = p.key
+                 printf '%s|%s|%s|%s|%s\\n' {key} \"$n\" \"$sz\" \"$last\" \"$mt\"\n",
+                pat = shell_escape_glob(&p.glob_path),
+                key = shell_escape(&p.key)
             ));
         }
-        /* 诊断 + 回退：递归查找 logs/ 下所有 .log 文件（路径|mtime 格式） */
-        /* 当 glob 未匹配时，用这些文件作为 latest_file 回退 */
+        /* 诊断：递归查找 logs/ 下所有 .log 文件（路径|mtime 格式），仅用于提示用户 */
         script.push_str(&format!(
             "find {base}/logs/ -name '*.log' -type f 2>/dev/null | head -100 | while read -r f; do \
                mt=$(stat -c %Y -- \"$f\" 2>/dev/null || echo 0); \
@@ -797,18 +798,8 @@ impl LogStreamService {
                         if mt > 0 { Some(mt * 1000) } else { None },
                         true,
                     )
-                } else if let Some((fb_path, fb_mt)) = fallback_files.first() {
-                    /* glob 未匹配：回退到目录中最新的 .log 文件（完整路径） */
-                    (
-                        Some(fb_path.clone()),
-                        if *fb_mt > 0 {
-                            Some(*fb_mt * 1000)
-                        } else {
-                            None
-                        },
-                        true,
-                    )
                 } else {
+                    /* glob 未匹配时不能借用其他日志源的最新文件，否则“实时最新”会打开错误文件。 */
                     (None, None, false)
                 };
                 LogSourceProbeResult {
@@ -817,13 +808,7 @@ impl LogStreamService {
                     group: p.group,
                     glob_path: p.glob_path,
                     exists: actual_exists,
-                    file_count: if count > 0 {
-                        count
-                    } else if latest_file.is_some() {
-                        1
-                    } else {
-                        0
-                    },
+                    file_count: count,
                     total_bytes: bytes,
                     latest_file,
                     latest_mtime_ms,
@@ -851,4 +836,50 @@ fn shell_escape(s: &str) -> String {
     }
     out.push('\'');
     out
+}
+
+/*
+ * 为已通过 prevalidate_glob_path_str 的 glob 路径生成 shell 参数。
+ * 普通 shell_escape 会把 * / ? 等通配符一并放进单引号，导致远端 shell 不展开 glob。
+ * 这里仅保留受控路径字符和 glob 元字符，未知字符仍按普通字符串转义。
+ */
+fn shell_escape_glob(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for (index, ch) in s.chars().enumerate() {
+        let safe_literal = ch.is_ascii_alphanumeric()
+            || matches!(
+                ch,
+                '/' | '.' | '_' | '-' | '@' | '+' | '%' | ',' | ':' | '='
+            );
+        let glob_meta = matches!(ch, '*' | '?' | '[' | ']');
+        if (index == 0 && ch == '~') || safe_literal || glob_meta {
+            out.push(ch);
+        } else {
+            out.push_str(&shell_escape(&ch.to_string()));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{shell_escape, shell_escape_glob};
+
+    #[test]
+    fn glob_escape_keeps_wildcards_expandable() {
+        assert_eq!(
+            shell_escape_glob("/var/log/app-[0-9]*.log"),
+            "/var/log/app-[0-9]*.log"
+        );
+        assert_eq!(shell_escape_glob("~/logs/app-?.log"), "~/logs/app-?.log");
+        assert_ne!(shell_escape("/var/log/app-*.log"), "/var/log/app-*.log");
+    }
+
+    #[test]
+    fn ordinary_shell_escape_still_quotes_untrusted_values() {
+        let escaped = shell_escape("service; touch /tmp/should-not-run");
+        assert!(escaped.starts_with('\''));
+        assert!(escaped.ends_with('\''));
+        assert_eq!(escaped, "'service; touch /tmp/should-not-run'");
+    }
 }
