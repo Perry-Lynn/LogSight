@@ -244,10 +244,21 @@ const AppInner: React.FC = () => {
         if (!Array.isArray(arr)) throw new Error('文件格式错误');
         let ok = 0;
         let locked = 0;
+        let scriptsDisabled = 0;
         for (const s of arr) {
-          if (!s.id || !s.host) continue;
+          if (!s || typeof s !== 'object' || !s.host || !s.username || !s.title) continue;
+          const imported = {
+            ...s,
+            // 导入永远创建新记录，避免静默覆盖当前服务器配置。
+            id: '',
+            // 外部 JSON 不可信，导入后不自动执行其中的远程脚本。
+            run_scripts_enabled: false,
+            run_scripts: [],
+          } as ServerConfig;
+          if (s.run_scripts_enabled && s.run_scripts?.length) scriptsDisabled++;
           let passwordPlain: string | null = null;
           let privateKeyPemPlain: string | null = null;
+          let credentialsLocked = false;
           try {
             if (s.password_cipher) {
               passwordPlain = await decryptSecret(s.password_cipher, appMasterPwdRef.current);
@@ -258,9 +269,15 @@ const AppInner: React.FC = () => {
           } catch (_) {
             // 跨安装导入的密文可能属于另一把主密钥；先保留配置，提示用户重新录入凭据。
             locked++;
+            credentialsLocked = true;
+          }
+          if (credentialsLocked) {
+            // 失效密文不能继续伪装成可用凭据，避免后续连接反复失败。
+            imported.password_cipher = null;
+            imported.private_key_cipher = null;
           }
           const saved = await saveServer(
-            s,
+            imported,
             passwordPlain,
             privateKeyPemPlain,
             appMasterPwdRef.current,
@@ -270,7 +287,10 @@ const AppInner: React.FC = () => {
           if (privateKeyPemPlain) setSecret(saved.id, undefined, privateKeyPemPlain);
           ok++;
         }
-        message.success(`成功导入 ${ok} 台服务器${locked ? `，其中 ${locked} 台凭据需要重新录入` : ''}`);
+        const skipped = arr.length - ok;
+        message.success(
+          `成功导入 ${ok} 台服务器${locked ? `，其中 ${locked} 台凭据需要重新录入` : ''}${scriptsDisabled ? `，已禁用 ${scriptsDisabled} 台配置中的自动脚本` : ''}${skipped ? `，跳过 ${skipped} 条无效记录` : ''}`,
+        );
       } catch (e: any) {
         message.error(e?.message || '导入失败');
       }

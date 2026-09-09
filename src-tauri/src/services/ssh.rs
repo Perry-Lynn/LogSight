@@ -12,12 +12,20 @@ use ssh2::{CheckResult, HashType, KeyboardInteractivePrompt, KnownHostFileKind, 
 use std::io::Read;
 use std::net::TcpStream;
 use std::path::PathBuf;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 
 use crate::models::{
     AuthType, ConnectTestResult, DirEntry, DirListResult, FileKind, PathValidateResult,
-    ServerConfig,
+    RemoteEnvironment, ServerConfig,
 };
+
+const REMOTE_ENVIRONMENT_PROBE: &str = r#"printf 'os=%s\n' "$(uname -s 2>/dev/null || printf unknown)"; printf 'shell=%s\n' "${SHELL:-unknown}"; for c in tail grep awk find stat; do if command -v "$c" >/dev/null 2>&1; then printf 'cmd=%s|yes\n' "$c"; else printf 'cmd=%s|no\n' "$c"; fi; done; if command -v stat >/dev/null 2>&1 && stat -c %Y / >/dev/null 2>&1; then printf 'stat_gnu=yes\n'; else printf 'stat_gnu=no\n'; fi"#;
+
+const REQUIRED_REMOTE_COMMANDS: [&str; 6] = ["tail", "grep", "awk", "find", "stat", "stat_gnu"];
 
 /* 简易 Password-based KI 提示符：无视任何提示题，全部返回固定密码
 用于兼容绝大部分 PAM/keyboard-interactive 模式的 SSH 服务器 */
@@ -653,8 +661,9 @@ impl SSHService {
     ) -> ConnectTestResult {
         let t0 = Instant::now();
         match Self::connect(server, password_plain, private_key_pem_plain).await {
-            Ok(s) => {
+            Ok(mut s) => {
                 let banner = s.session.banner().map(|b| b.to_string());
+                let remote_environment = Some(Self::detect_remote_environment(&mut s).await);
                 let latency = t0.elapsed().as_millis() as u64;
                 drop(s);
                 ConnectTestResult {
@@ -662,6 +671,7 @@ impl SSHService {
                     latency_ms: latency,
                     error_message: None,
                     banner,
+                    remote_environment,
                 }
             }
             Err(e) => ConnectTestResult {
@@ -669,8 +679,35 @@ impl SSHService {
                 latency_ms: t0.elapsed().as_millis() as u64,
                 error_message: Some(format!("{:#}", e)),
                 banner: None,
+                remote_environment: None,
             },
         }
+    }
+
+    /*
+     * 探测当前日志命令通道是否具备所需能力。
+     * 探测失败本身也作为“不支持”返回，便于界面区分 SSH 可用与日志模式可用。
+     */
+    pub async fn detect_remote_environment(ssh: &mut SSHSession) -> RemoteEnvironment {
+        let result = Self::exec_once(ssh, REMOTE_ENVIRONMENT_PROBE, 10).await;
+        let (stdout, stderr, exit) = match result {
+            Ok(value) => value,
+            Err(e) => {
+                return RemoteEnvironment {
+                    os: "unknown".into(),
+                    shell: "unknown".into(),
+                    available_commands: vec![],
+                    missing_commands: REQUIRED_REMOTE_COMMANDS
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
+                    supported: false,
+                    message: Some(format!("无法执行远程环境探测：{:#}", e)),
+                };
+            }
+        };
+
+        parse_remote_environment(&stdout, &stderr, exit)
     }
 
     /*
@@ -742,50 +779,126 @@ impl SSHService {
         remote_path: String,
         lines_backtrack: u32,
         line_tx: std::sync::mpsc::Sender<std::result::Result<String, String>>,
-        stop_rx: std::sync::mpsc::Receiver<()>,
-    ) {
-        let _ = || -> Result<()> {
-            let SSHSession {
-                session,
-                stream: _tcp,
-                server_id: _,
-            } = ssh;
-            let mut channel = session
-                .channel_session()
-                .map_err(|e| anyhow!("open channel fail: {e}"))?;
-            // 请求 PTY，防止远端 buffer 过大
-            channel.request_pty("xterm-256color", None, None).ok();
-            let cmd = format!(
-                "tail -n {} -F -- {}",
-                lines_backtrack,
-                shell_escape(&remote_path)
-            );
-            channel
-                .exec(&cmd)
-                .map_err(|e| anyhow!("exec tail fail: {e}"))?;
+        stop_flag: Arc<AtomicBool>,
+    ) -> std::result::Result<(), String> {
+        let SSHSession {
+            session,
+            stream: _tcp,
+            server_id: _,
+        } = ssh;
+        let mut channel = session
+            .channel_session()
+            .map_err(|e| format!("open channel fail: {e}"))?;
+        // 请求 PTY，防止远端 buffer 过大
+        channel.request_pty("xterm-256color", None, None).ok();
+        let cmd = format!(
+            "tail -n {} -F -- {}",
+            lines_backtrack,
+            shell_escape(&remote_path)
+        );
+        channel
+            .exec(&cmd)
+            .map_err(|e| format!("exec tail fail: {e}"))?;
+        session.set_blocking(false);
 
-            // 将 channel 拆为读流，用 BufReader 逐行读
-            use std::io::{BufRead, BufReader};
-            let reader = BufReader::new(channel.stream(0));
-            for line_res in reader.lines() {
-                // 检测停止信号
-                if stop_rx.try_recv().is_ok() {
-                    break;
-                }
-                match line_res {
-                    Ok(line) => {
-                        if line_tx.send(Ok(line)).is_err() {
-                            break; // 接收端断开
-                        }
-                    }
-                    Err(e) => {
-                        let _ = line_tx.send(Err(format!("读取错误: {}", e)));
-                        break;
-                    }
-                }
+        // 非阻塞读取让用户点击停止时无需等待远端产生下一行日志。
+        let mut pending = String::new();
+        let mut buf = [0u8; 16 * 1024];
+        loop {
+            if stop_flag.load(Ordering::Relaxed) {
+                return Ok(());
             }
-            Ok(())
-        }();
+            match channel.read(&mut buf) {
+                Ok(0) => {
+                    if channel.eof() {
+                        if !pending.is_empty() {
+                            line_tx
+                                .send(Ok(std::mem::take(&mut pending)))
+                                .map_err(|_| "日志接收端已关闭".to_string())?;
+                        }
+                        return Err("远程 tail 会话已结束".to_string());
+                    }
+                    std::thread::sleep(Duration::from_millis(80));
+                }
+                Ok(n) => {
+                    pending.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    while let Some(pos) = pending.find('\n') {
+                        let mut line = pending.drain(..=pos).collect::<String>();
+                        if line.ends_with('\n') {
+                            line.pop();
+                        }
+                        if line.ends_with('\r') {
+                            line.pop();
+                        }
+                        line_tx
+                            .send(Ok(line))
+                            .map_err(|_| "日志接收端已关闭".to_string())?;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(80));
+                }
+                Err(e) => return Err(format!("读取错误: {e}")),
+            }
+        }
+    }
+}
+
+fn parse_remote_environment(stdout: &str, stderr: &str, exit: i32) -> RemoteEnvironment {
+    let mut os = "unknown".to_string();
+    let mut shell = "unknown".to_string();
+    let mut available_commands = Vec::new();
+    let mut missing_commands = Vec::new();
+    let mut stat_gnu = false;
+
+    for line in stdout.lines() {
+        if let Some(value) = line.strip_prefix("os=") {
+            os = value.trim().to_string();
+        } else if let Some(value) = line.strip_prefix("shell=") {
+            shell = value.trim().to_string();
+        } else if let Some(value) = line.strip_prefix("cmd=") {
+            let mut parts = value.splitn(2, '|');
+            let command = parts.next().unwrap_or_default().trim();
+            let available = parts.next().unwrap_or_default().trim() == "yes";
+            if available {
+                available_commands.push(command.to_string());
+            } else if !command.is_empty() {
+                missing_commands.push(command.to_string());
+            }
+        } else if line.trim() == "stat_gnu=yes" {
+            stat_gnu = true;
+        }
+    }
+
+    if !stat_gnu {
+        missing_commands.push("stat -c".to_string());
+    }
+    if exit != 0 && missing_commands.is_empty() {
+        missing_commands.push("POSIX shell".to_string());
+    }
+    let supported = missing_commands.is_empty();
+    let message = if supported {
+        Some(format!("远程环境可用：{} / {}", os, shell))
+    } else if !stderr.trim().is_empty() {
+        Some(format!(
+            "远程环境暂不满足日志命令要求（{}）：{}",
+            missing_commands.join(", "),
+            stderr.trim()
+        ))
+    } else {
+        Some(format!(
+            "远程环境暂不满足日志命令要求（{}）",
+            missing_commands.join(", ")
+        ))
+    };
+
+    RemoteEnvironment {
+        os,
+        shell,
+        available_commands,
+        missing_commands,
+        supported,
+        message,
     }
 }
 
@@ -814,5 +927,26 @@ mod tests {
         assert!(prevalidate_glob_path_str("/var/log/$(whoami)-*.log").is_err());
         assert!(prevalidate_glob_path_str("/var/log/a;touch /tmp/pwned*.log").is_err());
         assert!(prevalidate_glob_path_str("logs/*.log").is_err());
+    }
+
+    #[test]
+    fn remote_environment_probe_requires_supported_command_set() {
+        let supported = parse_remote_environment(
+            "os=Linux\nshell=/bin/bash\ncmd=tail|yes\ncmd=grep|yes\ncmd=awk|yes\ncmd=find|yes\ncmd=stat|yes\nstat_gnu=yes\n",
+            "",
+            0,
+        );
+        assert!(supported.supported);
+        assert_eq!(supported.os, "Linux");
+        assert!(supported.missing_commands.is_empty());
+
+        let unsupported = parse_remote_environment(
+            "os=Windows_NT\nshell=powershell\ncmd=tail|no\nstat_gnu=no\n",
+            "command not found",
+            1,
+        );
+        assert!(!unsupported.supported);
+        assert!(unsupported.missing_commands.contains(&"tail".to_string()));
+        assert!(unsupported.message.unwrap().contains("command not found"));
     }
 }

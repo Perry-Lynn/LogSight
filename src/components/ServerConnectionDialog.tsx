@@ -330,6 +330,9 @@ const ServerConnectionDialog: React.FC<Props> = ({
       const res = await testConnection(snapshot, pwd_plain, pem_plain);
       if (res.success) {
         msg.success(`连接成功！延迟 ${res.latency_ms} ms` + (res.banner ? ` · Banner: ${res.banner.slice(0, 60)}` : ''));
+        if (res.remote_environment && !res.remote_environment.supported) {
+          msg.warning(res.remote_environment.message || 'SSH 已连接，但当前远程环境不满足日志命令要求');
+        }
       } else {
         msg.error(`连接失败：${res.error_message ?? '未知错误'}`);
       }

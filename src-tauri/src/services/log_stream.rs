@@ -11,6 +11,10 @@ use chrono::{Local, TimeZone, Utc};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tauri::{AppHandle, Emitter};
 
 use crate::models::{
@@ -20,8 +24,8 @@ use crate::models::{
 use crate::services::ssh::prevalidate_glob_path_str;
 use crate::services::SSHService;
 
-/* 活动日志会话注册表：session_id -> 停止信号发送端（std sync mpsc） */
-static LIVE_SESSIONS: Lazy<Mutex<HashMap<String, std::sync::mpsc::Sender<()>>>> =
+/* 活动日志会话注册表：session_id -> 可被 UI 置位的停止标记 */
+static LIVE_SESSIONS: Lazy<Mutex<HashMap<String, Arc<AtomicBool>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 /* 时间戳与结构化解析已统一收敛至 models.rs：
@@ -78,9 +82,9 @@ impl LogStreamService {
         let sid_ret = session_id.clone();
         let server_id = server.id.clone();
 
-        // std 同步 mpsc：停止信号
-        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
-        LIVE_SESSIONS.lock().insert(sid.clone(), stop_tx);
+        // 原子停止标记可以同时被重连循环和远程读循环检查。
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        LIVE_SESSIONS.lock().insert(sid.clone(), stop_flag.clone());
 
         // tokio sync mpsc：把 blocking 线程中的行 -> 主线程 emit
         let (async_line_tx, mut async_line_rx) =
@@ -117,6 +121,19 @@ impl LogStreamService {
                     return;
                 }
             };
+            let mut ssh_probe = ssh_probe;
+            let remote_environment = SSHService::detect_remote_environment(&mut ssh_probe).await;
+            if !remote_environment.supported {
+                Self::emit_status(
+                    &app,
+                    &sid,
+                    &server_id,
+                    SessionStatus::Error,
+                    remote_environment.message.as_deref(),
+                );
+                LIVE_SESSIONS.lock().remove(&sid);
+                return;
+            }
             // 该连接只用于探测；tail 和可选脚本各自使用独立会话，避免长期占用空闲连接。
             drop(ssh_probe);
             Self::emit_status(
@@ -124,7 +141,7 @@ impl LogStreamService {
                 &sid,
                 &server_id,
                 SessionStatus::Connected,
-                Some("SSH 已连接，准备启动 tail..."),
+                remote_environment.message.as_deref(),
             );
 
             // 1.2 依次执行连接后自定义脚本：每个脚本独立建连接，避免抢 tail-f session
@@ -160,42 +177,113 @@ impl LogStreamService {
                 let srv2 = server.clone();
                 let pwd2 = password_plain.clone();
                 let pem2 = private_key_pem_plain.clone();
+                let stop_worker = stop_flag.clone();
+                let app_worker = app.clone();
+                let sid_worker = sid.clone();
+                let server_id_worker = server_id.clone();
 
                 let tx_worker = tx.clone();
                 std::thread::Builder::new()
                     .name(format!("tail-f-{sid}"))
                     .spawn(move || {
-                        // blocking 线程内：重新建 SSH 连接（ssh2 Sync Session 非 Send 无法跨线程）
+                        // blocking 线程内：重新建 SSH 连接（ssh2 Sync Session 非 Send 无法跨线程）。
                         let runtime2 = tokio::runtime::Handle::try_current().ok();
-                        let ssh2 = match runtime2 {
-                            Some(rt) => rt.block_on(SSHService::connect(
-                                &srv2,
-                                pwd2.as_deref(),
-                                pem2.as_deref(),
-                            )),
-                            None => {
-                                let rt3 = tokio::runtime::Builder::new_current_thread()
-                                    .enable_all()
-                                    .build()
-                                    .unwrap();
-                                rt3.block_on(SSHService::connect(
+                        let mut retry = 0u32;
+                        let retry_delays = [1u64, 2, 4, 8, 15];
+                        let mut first_connection = true;
+
+                        loop {
+                            if stop_worker.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            if retry > 0 {
+                                let delay = retry_delays
+                                    [(retry - 1).min((retry_delays.len() - 1) as u32) as usize];
+                                Self::emit_status(
+                                    &app_worker,
+                                    &sid_worker,
+                                    &server_id_worker,
+                                    SessionStatus::Connecting,
+                                    Some(&format!(
+                                        "实时流断开，{} 秒后第 {} 次重连...",
+                                        delay, retry
+                                    )),
+                                );
+                                for _ in 0..delay * 10 {
+                                    if stop_worker.load(Ordering::Relaxed) {
+                                        break;
+                                    }
+                                    std::thread::sleep(std::time::Duration::from_millis(100));
+                                }
+                                if stop_worker.load(Ordering::Relaxed) {
+                                    break;
+                                }
+                            }
+
+                            let ssh2 = match &runtime2 {
+                                Some(rt) => rt.block_on(SSHService::connect(
                                     &srv2,
                                     pwd2.as_deref(),
                                     pem2.as_deref(),
-                                ))
+                                )),
+                                None => {
+                                    let rt3 = tokio::runtime::Builder::new_current_thread()
+                                        .enable_all()
+                                        .build()
+                                        .expect("创建实时日志重连 runtime 失败");
+                                    rt3.block_on(SSHService::connect(
+                                        &srv2,
+                                        pwd2.as_deref(),
+                                        pem2.as_deref(),
+                                    ))
+                                }
+                            };
+
+                            let ssh_sess = match ssh2 {
+                                Ok(session) => session,
+                                Err(e) => {
+                                    retry = retry.saturating_add(1);
+                                    if retry > retry_delays.len() as u32 {
+                                        let _ =
+                                            tx_worker.send(Err(format!("实时流重连失败：{:#}", e)));
+                                        break;
+                                    }
+                                    continue;
+                                }
+                            };
+
+                            retry = 0;
+                            Self::emit_status(
+                                &app_worker,
+                                &sid_worker,
+                                &server_id_worker,
+                                SessionStatus::Streaming,
+                                if first_connection {
+                                    Some("实时日志流已启动")
+                                } else {
+                                    Some("实时日志流已恢复；断线期间可能有日志遗漏")
+                                },
+                            );
+                            let backtrack = if first_connection { lines_bt } else { 0 };
+                            match SSHService::stream_tail_f_blocking(
+                                ssh_sess,
+                                remote_path_cloned.clone(),
+                                backtrack,
+                                tx_worker.clone(),
+                                stop_worker.clone(),
+                            ) {
+                                Ok(()) => break,
+                                Err(e) => {
+                                    first_connection = false;
+                                    retry = retry.saturating_add(1);
+                                    if retry > retry_delays.len() as u32 {
+                                        let _ = tx_worker
+                                            .send(Err(format!("实时流已断开且重连失败：{}", e)));
+                                        break;
+                                    }
+                                }
                             }
-                        };
-                        let Ok(ssh_sess) = ssh2 else {
-                            let _ = tx_worker.send(Err("tail session reconnect fail".to_string()));
-                            return;
-                        };
-                        SSHService::stream_tail_f_blocking(
-                            ssh_sess,
-                            remote_path_cloned,
-                            lines_bt,
-                            tx_worker,
-                            stop_rx,
-                        );
+                        }
                     })
                     .ok();
                 // 转发：std mpsc rx -> tokio mpsc tx
@@ -274,8 +362,8 @@ impl LogStreamService {
 
     /* 停止指定会话（发送停止信号） */
     pub fn stop_tail(session_id: &str) -> bool {
-        if let Some(tx) = LIVE_SESSIONS.lock().remove(session_id) {
-            let _ = tx.send(());
+        if let Some(stop_flag) = LIVE_SESSIONS.lock().remove(session_id) {
+            stop_flag.store(true, Ordering::Relaxed);
             true
         } else {
             false
@@ -286,8 +374,8 @@ impl LogStreamService {
     pub fn stop_all() -> usize {
         let sessions = std::mem::take(&mut *LIVE_SESSIONS.lock());
         let count = sessions.len();
-        for (_, tx) in sessions {
-            let _ = tx.send(());
+        for (_, stop_flag) in sessions {
+            stop_flag.store(true, Ordering::Relaxed);
         }
         count
     }

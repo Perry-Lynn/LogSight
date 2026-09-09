@@ -1,7 +1,7 @@
 [package]
 name = "logsight"
 version = "0.2.1"
-description = "LogSight - Mac 服务器日志查看桌面应用"
+description = "LogSight - 跨平台远程服务器日志查看桌面应用"
 authors = ["LogSight contributors"]
 edition = "2021"
 

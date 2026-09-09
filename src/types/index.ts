@@ -118,6 +118,17 @@ export interface ConnectTestResult {
   latency_ms: number;
   error_message?: string | null;
   banner?: string | null;
+  remote_environment?: RemoteEnvironment | null;
+}
+
+/** 远程日志命令能力探测结果 */
+export interface RemoteEnvironment {
+  os: string;
+  shell: string;
+  available_commands: string[];
+  missing_commands: string[];
+  supported: boolean;
+  message?: string | null;
 }
 
 /** 单个打开的日志标签页 */

@@ -313,6 +313,23 @@ pub struct ConnectTestResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
     pub banner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_environment: Option<RemoteEnvironment>,
+}
+
+/*
+ * 远程日志能力探测结果。
+ * 当前日志命令通道以 POSIX/Unix 远程环境为第一支持目标，
+ * 先把“SSH 能连通”和“日志功能可用”拆开，避免把环境不兼容误报成路径错误。
+ */
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteEnvironment {
+    pub os: String,
+    pub shell: String,
+    pub available_commands: Vec<String>,
+    pub missing_commands: Vec<String>,
+    pub supported: bool,
+    pub message: Option<String>,
 }
 
 /*
