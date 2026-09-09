@@ -33,13 +33,9 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 
 /* ================= 主密码相关 ================= */
 
-/** 获取或初始化应用主密码（首次启动自动生成） */
+/** 从系统钥匙串获取或初始化应用主密码 */
 export const getOrCreateMasterPassword = (): Promise<string> =>
   call<string>('get_or_create_master_password');
-
-/** 查看当前 master 密码（仅 MVP 便捷开发） */
-export const peekMasterPassword = (): Promise<string> =>
-  call<string>('peek_master_password');
 
 /** 解密密文为明文（密码/私钥等） */
 export const decryptSecret = (cipherB64: string, masterPassword: string): Promise<string> =>
@@ -70,6 +66,7 @@ export const saveServer = (
     use_ssh_agent: false,
     ssh_agent_path: null,
     use_mfa: false,
+    run_scripts_enabled: false,
     run_scripts: [],
     description: '',
     created_at: new Date(0).toISOString(),

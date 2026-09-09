@@ -5,15 +5,15 @@
  * @LastEditors: fu
  * @Date: 2026-08-26
  */
-use anyhow::{Result, Context, anyhow};
+use anyhow::{anyhow, Context, Result};
+use once_cell::sync::OnceCell;
+use parking_lot::RwLock;
+use serde::{de::DeserializeOwned, Serialize};
 use sled::Db;
 use std::path::PathBuf;
 use std::sync::Arc;
-use parking_lot::RwLock;
-use once_cell::sync::OnceCell;
-use serde::{de::DeserializeOwned, Serialize};
 
-use crate::models::{ServerConfig, LogbackServerConfig};
+use crate::models::{LogbackServerConfig, ServerConfig};
 
 /* 存储服务全局单例 */
 static STORAGE_INSTANCE: OnceCell<Arc<StorageService>> = OnceCell::new();
@@ -68,7 +68,8 @@ impl StorageService {
     /* 获取已初始化的全局单例（若未初始化则返回错误） */
     #[allow(dead_code)]
     pub fn get() -> Result<Arc<Self>> {
-        STORAGE_INSTANCE.get()
+        STORAGE_INSTANCE
+            .get()
             .cloned()
             .ok_or_else(|| anyhow!("StorageService 尚未初始化，请先调用 init()"))
     }
@@ -149,14 +150,17 @@ impl StorageService {
         self.get_json(&self.settings, b"master_sentinel")
     }
 
-    /* 保存通用设置 */
-    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
-        self.put_json(&self.settings, key.as_bytes(), &value.to_string())
-    }
-
     /* 读取通用设置 */
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
         self.get_json(&self.settings, key.as_bytes())
+    }
+
+    /* 删除指定设置，用于迁移旧版本的明文主密钥记录 */
+    pub fn delete_setting(&self, key: &str) -> Result<bool> {
+        let _g = self.lock.write();
+        let existed = self.settings.remove(key.as_bytes())?.is_some();
+        self.settings.flush()?;
+        Ok(existed)
     }
 
     /* ===== logback 配置 CRUD ===== */

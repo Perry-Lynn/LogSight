@@ -6,64 +6,79 @@
  * @LastEditors: fu
  * @Date: 2026-08-26
  */
+use keyring::Entry;
 use std::path::PathBuf;
 use tauri::{command, AppHandle, Manager};
 
 use crate::models::{
-    ServerConfig, ApiResponse, ConnectTestResult, LogLine, DirListResult, PathValidateResult,
-    LogSourceProbeResult, LogbackServerConfig,
+    ApiResponse, ConnectTestResult, DirListResult, LogLine, LogSourceProbeResult,
+    LogbackServerConfig, PathValidateResult, ServerConfig,
 };
-use crate::services::{CryptoService, StorageService, SSHService, LogStreamService};
 use crate::services::logback_parser::parse_logback_xml;
+use crate::services::{CryptoService, LogStreamService, SSHService, StorageService};
 
 /* ===== 通用工具命令 ===== */
 
+const KEYRING_SERVICE: &str = "com.fu.logsight";
+const KEYRING_ACCOUNT: &str = "app-master-password";
+
 /*
- * 命令：获取应用主密码（首次启动自动生成，后续从存储读取）
- * 注：生产环境应要求用户输入主密码，MVP 版自动生成并安全保存
+ * 命令：获取应用主密码。
+ * 新版本使用系统钥匙串保存主密钥；旧版本曾将其放在 sled 中，这里只做一次迁移。
  */
 #[command]
 pub async fn get_or_create_master_password(app: AppHandle) -> ApiResponse<String> {
-    let data_dir = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("./"));
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("./"));
     let storage = match StorageService::init(data_dir.clone()) {
         Ok(s) => s,
         Err(e) => return ApiResponse::err(format!("初始化存储失败: {:#}", e)),
     };
-    match storage.get_master_sentinel() {
-        Ok(Some(_cipher)) => {
-            // 已存在：说明 master 已初始化过，返回固定标记；实际解密时前端需要从安全存储取
-            ApiResponse::ok("master-initialized".to_string())
+    let entry = match Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
+        Ok(entry) => entry,
+        Err(e) => return ApiResponse::err(format!("初始化系统钥匙串失败: {e}")),
+    };
+
+    if let Ok(master) = entry.get_password() {
+        return ApiResponse::ok(master);
+    }
+
+    // 从 v0.2 的旧存储迁移一次，迁移成功后立即删除旧明文记录。
+    match storage.get_setting("app_master_key") {
+        Ok(Some(legacy_master)) => {
+            if let Err(e) = entry.set_password(&legacy_master) {
+                return ApiResponse::err(format!("迁移系统钥匙串失败: {e}"));
+            }
+            let _ = storage.delete_setting("app_master_key");
+            return ApiResponse::ok(legacy_master);
         }
+        Ok(None) => {}
+        Err(e) => return ApiResponse::err(format!("读取设置失败: {:#}", e)),
+    }
+
+    match storage.get_master_sentinel() {
+        Ok(Some(_)) => ApiResponse::err(
+            "系统钥匙串中找不到应用主密钥，无法解密已有服务器配置；请恢复钥匙串后重试".to_string(),
+        ),
         Ok(None) => {
-            // 首次启动：生成一个随机应用级 master password 并保存哨兵
             let crypto = CryptoService::new();
             let master = CryptoService::generate_app_master_password();
-            // 用 master 加密一个已知字符串作为校验哨兵
-            match crypto.encrypt_str("LOGSIGHT_OK", &master) {
-                Ok(sentinel) => {
-                    let _ = storage.set_master_sentinel(&sentinel);
-                    let _ = storage.set_setting("app_master_key", &master);
-                    ApiResponse::ok(master)
-                }
-                Err(e) => ApiResponse::err(format!("生成主密码失败: {:#}", e)),
+            match entry.set_password(&master) {
+                Ok(()) => match crypto.encrypt_str("LOGSIGHT_OK", &master) {
+                    Ok(sentinel) => {
+                        if let Err(e) = storage.set_master_sentinel(&sentinel) {
+                            return ApiResponse::err(format!("保存主密钥校验值失败: {:#}", e));
+                        }
+                        ApiResponse::ok(master)
+                    }
+                    Err(e) => ApiResponse::err(format!("生成主密码失败: {:#}", e)),
+                },
+                Err(e) => ApiResponse::err(format!("保存系统钥匙串失败: {e}")),
             }
         }
         Err(e) => ApiResponse::err(format!("读取设置失败: {:#}", e)),
-    }
-}
-
-/* 命令：查询存储中已保存的 master password（仅开发 MVP 便捷方式） */
-#[command]
-pub async fn peek_master_password(app: AppHandle) -> ApiResponse<String> {
-    let data_dir = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("./"));
-    let storage = match StorageService::init(data_dir) {
-        Ok(s) => s,
-        Err(e) => return ApiResponse::err(format!("{:#}", e)),
-    };
-    match storage.get_setting("app_master_key") {
-        Ok(Some(k)) => ApiResponse::ok(k),
-        Ok(None) => ApiResponse::err("master key not initialized".to_string()),
-        Err(e) => ApiResponse::err(format!("{:#}", e)),
     }
 }
 
@@ -81,7 +96,10 @@ pub async fn save_server(
     private_key_pem_plain: Option<String>,
     master_password: String,
 ) -> ApiResponse<ServerConfig> {
-    let data_dir = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("./"));
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("./"));
     let crypto = CryptoService::new();
 
     // 1. 加密敏感字段
@@ -117,7 +135,10 @@ pub async fn save_server(
 /* 命令：列出所有服务器配置（敏感字段保持密文，由前端按需解密） */
 #[command]
 pub async fn list_servers(app: AppHandle) -> ApiResponse<Vec<ServerConfig>> {
-    let data_dir = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("./"));
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("./"));
     let storage = match StorageService::init(data_dir) {
         Ok(s) => s,
         Err(e) => return ApiResponse::err(format!("{:#}", e)),
@@ -131,7 +152,10 @@ pub async fn list_servers(app: AppHandle) -> ApiResponse<Vec<ServerConfig>> {
 /* 命令：获取单个服务器配置 */
 #[command]
 pub async fn get_server(app: AppHandle, id: String) -> ApiResponse<ServerConfig> {
-    let data_dir = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("./"));
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("./"));
     let storage = match StorageService::init(data_dir) {
         Ok(s) => s,
         Err(e) => return ApiResponse::err(format!("{:#}", e)),
@@ -146,7 +170,10 @@ pub async fn get_server(app: AppHandle, id: String) -> ApiResponse<ServerConfig>
 /* 命令：删除服务器配置 */
 #[command]
 pub async fn delete_server(app: AppHandle, id: String) -> ApiResponse<bool> {
-    let data_dir = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("./"));
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("./"));
     let storage = match StorageService::init(data_dir) {
         Ok(s) => s,
         Err(e) => return ApiResponse::err(format!("{:#}", e)),
@@ -159,10 +186,7 @@ pub async fn delete_server(app: AppHandle, id: String) -> ApiResponse<bool> {
 
 /* 命令：将服务器配置的敏感字段解密密文为明文（仅前端使用） */
 #[command]
-pub async fn decrypt_secret(
-    cipher_b64: String,
-    master_password: String,
-) -> ApiResponse<String> {
+pub async fn decrypt_secret(cipher_b64: String, master_password: String) -> ApiResponse<String> {
     let crypto = CryptoService::new();
     match crypto.decrypt_str(&cipher_b64, &master_password) {
         Ok(plain) => ApiResponse::ok(plain),
@@ -183,7 +207,8 @@ pub async fn test_connection(
         &server,
         password_plain.as_deref(),
         private_key_pem_plain.as_deref(),
-    ).await;
+    )
+    .await;
     ApiResponse::ok(res)
 }
 
@@ -239,7 +264,9 @@ pub async fn fetch_history(
         page_size.unwrap_or(500).clamp(10, 5000),
         password_plain.as_deref(),
         private_key_pem_plain.as_deref(),
-    ).await {
+    )
+    .await
+    {
         Ok(lines) => ApiResponse::ok(lines),
         Err(e) => ApiResponse::err(format!("获取历史日志失败: {:#}", e)),
     }
@@ -266,7 +293,9 @@ pub async fn fetch_history_by_time(
         offset_lines.unwrap_or(0),
         password_plain.as_deref(),
         private_key_pem_plain.as_deref(),
-    ).await {
+    )
+    .await
+    {
         Ok(lines) => ApiResponse::ok(lines),
         Err(e) => ApiResponse::err(format!("按时间加载日志失败: {:#}", e)),
     }
@@ -295,7 +324,9 @@ pub async fn search_logs(
         max_lines.unwrap_or(1000).clamp(10, 20000),
         password_plain.as_deref(),
         private_key_pem_plain.as_deref(),
-    ).await {
+    )
+    .await
+    {
         Ok(lines) => ApiResponse::ok(lines),
         Err(e) => ApiResponse::err(format!("搜索失败: {:#}", e)),
     }
@@ -321,7 +352,9 @@ pub async fn search_by_trace_id(
         max_lines.unwrap_or(2000).clamp(10, 20000),
         password_plain.as_deref(),
         private_key_pem_plain.as_deref(),
-    ).await {
+    )
+    .await
+    {
         Ok(lines) => ApiResponse::ok(lines),
         Err(e) => ApiResponse::err(format!("链路追踪失败: {:#}", e)),
     }
@@ -340,7 +373,10 @@ pub async fn probe_log_sources(
     password_plain: Option<String>,
     private_key_pem_plain: Option<String>,
 ) -> ApiResponse<Vec<LogSourceProbeResult>> {
-    let data_dir = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("./"));
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("./"));
     let logback_config = StorageService::init(data_dir)
         .ok()
         .and_then(|s| s.get_logback_config(&server.id).ok().flatten());
@@ -351,7 +387,9 @@ pub async fn probe_log_sources(
         password_plain.as_deref(),
         private_key_pem_plain.as_deref(),
         logback_config.as_ref(),
-    ).await {
+    )
+    .await
+    {
         Ok(res) => ApiResponse::ok(res),
         Err(e) => ApiResponse::err(format!("探测日志源失败: {:#}", e)),
     }
@@ -368,7 +406,10 @@ pub async fn import_logback_config(
     server_id: String,
     xml_content: String,
 ) -> ApiResponse<LogbackServerConfig> {
-    let data_dir = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("./"));
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("./"));
     let storage = match StorageService::init(data_dir) {
         Ok(s) => s,
         Err(e) => return ApiResponse::err(format!("初始化存储失败: {:#}", e)),
@@ -392,7 +433,10 @@ pub async fn get_logback_config(
     app: AppHandle,
     server_id: String,
 ) -> ApiResponse<Option<LogbackServerConfig>> {
-    let data_dir = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("./"));
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("./"));
     let storage = match StorageService::init(data_dir) {
         Ok(s) => s,
         Err(e) => return ApiResponse::err(format!("初始化存储失败: {:#}", e)),
@@ -407,11 +451,11 @@ pub async fn get_logback_config(
  * 命令：删除服务器的 logback 配置
  */
 #[command]
-pub async fn delete_logback_config(
-    app: AppHandle,
-    server_id: String,
-) -> ApiResponse<()> {
-    let data_dir = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("./"));
+pub async fn delete_logback_config(app: AppHandle, server_id: String) -> ApiResponse<()> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("./"));
     let storage = match StorageService::init(data_dir) {
         Ok(s) => s,
         Err(e) => return ApiResponse::err(format!("初始化存储失败: {:#}", e)),
@@ -441,7 +485,9 @@ pub async fn list_server_dir(
         &remote_path,
         password_plain.as_deref(),
         private_key_pem_plain.as_deref(),
-    ).await {
+    )
+    .await
+    {
         Ok(res) => ApiResponse::ok(res),
         Err(e) => ApiResponse::err(format!("读取目录失败: {:#}", e)),
     }
@@ -463,7 +509,8 @@ pub async fn validate_server_path(
         &remote_path,
         password_plain.as_deref(),
         private_key_pem_plain.as_deref(),
-    ).await;
+    )
+    .await;
     ApiResponse::ok(res)
 }
 
@@ -481,7 +528,9 @@ pub async fn resolve_server_home(
         &server,
         password_plain.as_deref(),
         private_key_pem_plain.as_deref(),
-    ).await {
+    )
+    .await
+    {
         Ok(p) => ApiResponse::ok(p),
         Err(e) => ApiResponse::err(format!("解析主目录失败: {:#}", e)),
     }

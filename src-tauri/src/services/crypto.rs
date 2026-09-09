@@ -7,12 +7,12 @@
  */
 use aes_gcm::{
     aead::{Aead, KeyInit, OsRng},
-    Aes256Gcm, Nonce, Key,
+    Aes256Gcm, Key, Nonce,
 };
+use anyhow::{anyhow, Context, Result};
 use argon2::{Algorithm, Argon2, Params, Version};
-use anyhow::{Result, Context, anyhow};
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use rand::RngCore;
-use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 
 /*
  * 加密服务结构体
@@ -98,7 +98,8 @@ impl CryptoService {
      */
     pub fn decrypt(&self, cipher_b64: &str, master_password: &str) -> Result<Vec<u8>> {
         // 1. Base64 解码
-        let mut blob = B64.decode(cipher_b64.as_bytes())
+        let mut blob = B64
+            .decode(cipher_b64.as_bytes())
             .map_err(|e| anyhow!("Base64 解码失败，密文可能损坏: {}", e))?;
         if blob.len() < 16 + 12 + 1 {
             return Err(anyhow!("密文长度过短，数据不完整"));

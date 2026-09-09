@@ -34,6 +34,8 @@ export interface ServerConfig {
   use_ssh_agent: boolean;
   ssh_agent_path?: string | null;
   use_mfa: boolean;
+  /** 是否允许连接成功后自动执行保存的远程脚本 */
+  run_scripts_enabled?: boolean;
   run_scripts: RunScript[];
   description: string;
   created_at: string;

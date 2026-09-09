@@ -5,10 +5,10 @@
  * @LastEditors: fu
  * @Date: 2026-08-26
  */
-use serde::{Deserialize, Serialize};
-use chrono::{DateTime, Utc, NaiveDateTime, Local};
+use chrono::{DateTime, Local, NaiveDateTime, Utc};
 use once_cell::sync::Lazy;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 
 /*
  * SSH 认证方式枚举
@@ -84,6 +84,9 @@ pub struct ServerConfig {
     pub ssh_agent_path: Option<String>,
     /* 是否启用 MFA/OTP 多因素认证，默认 false */
     pub use_mfa: bool,
+    /* 是否允许连接成功后自动执行脚本，默认关闭 */
+    #[serde(default)]
+    pub run_scripts_enabled: bool,
     /* 连接成功后自动执行的脚本列表，可多个 */
     pub run_scripts: Vec<RunScript>,
     /* 连接备注描述 */
@@ -113,6 +116,7 @@ impl Default for ServerConfig {
             use_ssh_agent: false,
             ssh_agent_path: None,
             use_mfa: false,
+            run_scripts_enabled: false,
             run_scripts: vec![],
             description: String::new(),
             created_at: Utc::now(),
@@ -323,7 +327,9 @@ pub enum FileKind {
 }
 
 impl Default for FileKind {
-    fn default() -> Self { FileKind::Other }
+    fn default() -> Self {
+        FileKind::Other
+    }
 }
 
 /*
@@ -391,32 +397,38 @@ pub struct PathValidateResult {
  */
 
 /* 完整格式：ts [thread] LEVEL [traceId] logger - msg */
-static RE_LOGBACK_FULL: Lazy<Regex> = Lazy::new(|| Regex::new(
+static RE_LOGBACK_FULL: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
     r"^(?P<ts>\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,3})?)\s+\[(?P<thread>[^\]]*)\]\s+(?P<level>[A-Za-z]+)\s+\[(?P<trace>[^\]]*)\]\s+(?P<logger>\S+)\s+-\s(?P<msg>.*)$"
-).unwrap());
+).unwrap()
+});
 
 /* 变体：ts [thread] LEVEL logger - msg（未配置 MDC traceId） */
-static RE_LOGBACK_NO_MDC: Lazy<Regex> = Lazy::new(|| Regex::new(
+static RE_LOGBACK_NO_MDC: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
     r"^(?P<ts>\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,3})?)\s+\[(?P<thread>[^\]]*)\]\s+(?P<level>[A-Za-z]+)\s+(?P<logger>\S+)\s+-\s(?P<msg>.*)$"
-).unwrap());
+).unwrap()
+});
 
 /* 变体：ts LEVEL logger - msg（无线程名） */
-static RE_LOGBACK_PLAIN: Lazy<Regex> = Lazy::new(|| Regex::new(
+static RE_LOGBACK_PLAIN: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
     r"^(?P<ts>\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,3})?)\s+(?P<level>[A-Za-z]+)\s+(?P<logger>\S+)\s+-\s(?P<msg>.*)$"
-).unwrap());
+).unwrap()
+});
 
 /* 通用时间戳正则（非 logback 格式兜底）
  * 注意：Rust regex 不支持 (?!) 前瞻，带毫秒 pattern 优先匹配即可避免歧义 */
-static TS_RE_ISO_MS: Lazy<Regex> = Lazy::new(||
-    Regex::new(r"^\s*(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}\.\d{3})").unwrap());
-static TS_RE_ISO: Lazy<Regex> = Lazy::new(||
-    Regex::new(r"^\s*(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})").unwrap());
-static TS_RE_SLASH_MS: Lazy<Regex> = Lazy::new(||
-    Regex::new(r"^\s*(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}\.\d{3})").unwrap());
-static TS_RE_SLASH: Lazy<Regex> = Lazy::new(||
-    Regex::new(r"^\s*(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})").unwrap());
-static TS_RE_TIME_ONLY: Lazy<Regex> = Lazy::new(||
-    Regex::new(r"^\s*(\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?)\b").unwrap());
+static TS_RE_ISO_MS: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^\s*(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}\.\d{3})").unwrap());
+static TS_RE_ISO: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^\s*(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})").unwrap());
+static TS_RE_SLASH_MS: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^\s*(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}\.\d{3})").unwrap());
+static TS_RE_SLASH: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^\s*(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})").unwrap());
+static TS_RE_TIME_ONLY: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^\s*(\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?)\b").unwrap());
 
 /**
  * 把时间戳字符串解析为毫秒时间戳
@@ -429,7 +441,9 @@ fn parse_ts_token(s: &str) -> Option<i64> {
     } else {
         NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S").ok()
     }?;
-    dt.and_local_timezone(Local).earliest().map(|t| t.timestamp_millis())
+    dt.and_local_timezone(Local)
+        .earliest()
+        .map(|t| t.timestamp_millis())
 }
 
 /**
@@ -438,24 +452,34 @@ fn parse_ts_token(s: &str) -> Option<i64> {
  */
 pub fn parse_timestamp_from_text(text: &str) -> Option<i64> {
     if let Some(m) = TS_RE_ISO_MS.captures(text) {
-        if let Some(ts) = parse_ts_token(&m[1]) { return Some(ts); }
+        if let Some(ts) = parse_ts_token(&m[1]) {
+            return Some(ts);
+        }
     }
     if let Some(m) = TS_RE_ISO.captures(text) {
-        if let Some(ts) = parse_ts_token(&m[1]) { return Some(ts); }
+        if let Some(ts) = parse_ts_token(&m[1]) {
+            return Some(ts);
+        }
     }
     if let Some(m) = TS_RE_SLASH_MS.captures(text) {
         let s = m[1].replace('/', "-");
-        if let Some(ts) = parse_ts_token(&s) { return Some(ts); }
+        if let Some(ts) = parse_ts_token(&s) {
+            return Some(ts);
+        }
     }
     if let Some(m) = TS_RE_SLASH.captures(text) {
         let s = m[1].replace('/', "-");
-        if let Some(ts) = parse_ts_token(&s) { return Some(ts); }
+        if let Some(ts) = parse_ts_token(&s) {
+            return Some(ts);
+        }
     }
     // 纯时间无日期（常见于 Java/MyBatis 日志）：补今天日期
     if let Some(m) = TS_RE_TIME_ONLY.captures(text) {
         let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
         let s = format!("{} {}", today, &m[1]);
-        if let Some(ts) = parse_ts_token(&s) { return Some(ts); }
+        if let Some(ts) = parse_ts_token(&s) {
+            return Some(ts);
+        }
     }
     None
 }
@@ -485,15 +509,21 @@ pub struct LogFields {
  * 超长行（>8KB）直接跳过正则，避免极端回溯
  */
 pub fn parse_log_fields(text: &str) -> Option<LogFields> {
-    if text.is_empty() || text.len() > 8192 { return None; }
+    if text.is_empty() || text.len() > 8192 {
+        return None;
+    }
 
     if let Some(c) = RE_LOGBACK_FULL.captures(text) {
         let ts = c.name("ts").map(|m| m.as_str()).and_then(parse_ts_token);
-        let trace = c.name("trace").map(|m| m.as_str().trim().to_string()).unwrap_or_default();
+        let trace = c
+            .name("trace")
+            .map(|m| m.as_str().trim().to_string())
+            .unwrap_or_default();
         return Some(LogFields {
             timestamp_ms: ts,
             thread: c.name("thread").map(|m| m.as_str().to_string()),
-            level: c.name("level")
+            level: c
+                .name("level")
                 .and_then(|m| LogLevel::from_token(m.as_str()))
                 .unwrap_or(LogLevel::Unknown),
             trace_id: if trace.is_empty() { None } else { Some(trace) },
@@ -507,7 +537,8 @@ pub fn parse_log_fields(text: &str) -> Option<LogFields> {
         return Some(LogFields {
             timestamp_ms: ts,
             thread: c.name("thread").map(|m| m.as_str().to_string()),
-            level: c.name("level")
+            level: c
+                .name("level")
                 .and_then(|m| LogLevel::from_token(m.as_str()))
                 .unwrap_or(LogLevel::Unknown),
             trace_id: None,
@@ -521,7 +552,8 @@ pub fn parse_log_fields(text: &str) -> Option<LogFields> {
         return Some(LogFields {
             timestamp_ms: ts,
             thread: None,
-            level: c.name("level")
+            level: c
+                .name("level")
                 .and_then(|m| LogLevel::from_token(m.as_str()))
                 .unwrap_or(LogLevel::Unknown),
             trace_id: None,
@@ -709,7 +741,10 @@ mod tests {
         assert_eq!(fields.thread.as_deref(), Some("http-nio-8088-exec-1"));
         assert_eq!(fields.level, LogLevel::Error);
         assert_eq!(fields.trace_id.as_deref(), Some("trace-123"));
-        assert_eq!(fields.logger.as_deref(), Some("com.example.application.Service"));
+        assert_eq!(
+            fields.logger.as_deref(),
+            Some("com.example.application.Service")
+        );
         assert_eq!(fields.message.as_deref(), Some("request failed"));
         assert!(fields.timestamp_ms.is_some());
     }
@@ -726,7 +761,10 @@ mod tests {
     fn primary_presets_do_not_overlap_error_files() {
         let presets = log_source_presets();
         assert_eq!(presets.len(), 7);
-        for preset in presets.iter().filter(|p| !p.error_only && p.key != "application") {
+        for preset in presets
+            .iter()
+            .filter(|p| !p.error_only && p.key != "application")
+        {
             assert!(preset.rel_pattern.contains("[0-9]*"));
         }
     }

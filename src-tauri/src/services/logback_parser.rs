@@ -5,11 +5,11 @@
  * @Author: fu
  * @Date: 2026-09-07
  */
-use std::collections::HashMap;
-use anyhow::{Result, anyhow};
-use quick_xml::events::{Event, BytesStart};
-use quick_xml::reader::Reader;
+use anyhow::{anyhow, Result};
 use chrono::Utc;
+use quick_xml::events::{BytesStart, Event};
+use quick_xml::reader::Reader;
+use std::collections::HashMap;
 
 use crate::models::{LogbackAppender, LogbackServerConfig};
 
@@ -129,57 +129,73 @@ pub fn parse_logback_xml(xml_content: &str, server_id: &str) -> Result<LogbackSe
     /* 建立 appender name → logger name 映射（命名 logger 优先于 root） */
     let mut appender_to_logger: HashMap<String, String> = HashMap::new();
     for logger in &loggers {
-        if logger.name == "root" { continue; }
+        if logger.name == "root" {
+            continue;
+        }
         for ref_name in &logger.appender_refs {
-            appender_to_logger.entry(ref_name.clone()).or_insert_with(|| logger.name.clone());
+            appender_to_logger
+                .entry(ref_name.clone())
+                .or_insert_with(|| logger.name.clone());
         }
     }
     /* root 的引用作为 fallback（仅当没有命名 logger 引用该 appender 时） */
     for logger in &loggers {
-        if logger.name != "root" { continue; }
+        if logger.name != "root" {
+            continue;
+        }
         for ref_name in &logger.appender_refs {
-            appender_to_logger.entry(ref_name.clone()).or_insert_with(|| logger.name.clone());
+            appender_to_logger
+                .entry(ref_name.clone())
+                .or_insert_with(|| logger.name.clone());
         }
     }
 
     /* 提取 LOG_PATH / LOG_HOME 等常见属性 */
-    let log_base_path = properties.get("LOG_PATH")
+    let log_base_path = properties
+        .get("LOG_PATH")
         .or_else(|| properties.get("LOG_HOME"))
         .or_else(|| properties.get("log.path"))
         .or_else(|| properties.get("log.home"))
         .cloned();
 
     /* 转换 RawAppender → LogbackAppender */
-    let result_appenders: Vec<LogbackAppender> = appenders.into_iter().filter_map(|raw| {
-        if !raw.is_file_appender {
-            return None;
-        }
-        let file = raw.file.map(|f| substitute_vars(&f, &properties));
-        let pattern = raw.file_name_pattern.map(|p| substitute_vars(&p, &properties));
-        let glob = pattern.as_ref().map(|p| pattern_to_glob(p));
+    let result_appenders: Vec<LogbackAppender> = appenders
+        .into_iter()
+        .filter_map(|raw| {
+            if !raw.is_file_appender {
+                return None;
+            }
+            let file = raw.file.map(|f| substitute_vars(&f, &properties));
+            let pattern = raw
+                .file_name_pattern
+                .map(|p| substitute_vars(&p, &properties));
+            let glob = pattern.as_ref().map(|p| pattern_to_glob(p));
 
-        let error_only = raw.filter_level.as_ref()
-            .map(|l| l == "ERROR" || l == "FATAL" || l == "SEVERE")
-            .unwrap_or(false);
+            let error_only = raw
+                .filter_level
+                .as_ref()
+                .map(|l| l == "ERROR" || l == "FATAL" || l == "SEVERE")
+                .unwrap_or(false);
 
-        /* 从关联 logger 推断 label 和 group */
-        let logger_name = appender_to_logger.get(&raw.name).cloned();
-        let (label, group) = infer_label_and_group(&raw.name, logger_name.as_deref());
+            /* 从关联 logger 推断 label 和 group */
+            let logger_name = appender_to_logger.get(&raw.name).cloned();
+            let (label, group) = infer_label_and_group(&raw.name, logger_name.as_deref());
 
-        /* 至少要有 file 或 glob_pattern 之一 */
-        if file.is_none() && glob.is_none() {
-            return None;
-        }
+            /* 至少要有 file 或 glob_pattern 之一 */
+            if file.is_none() && glob.is_none() {
+                return None;
+            }
 
-        Some(LogbackAppender {
-            name: raw.name,
-            label,
-            group,
-            file_path: file,
-            glob_pattern: glob,
-            error_only,
+            Some(LogbackAppender {
+                name: raw.name,
+                label,
+                group,
+                file_path: file,
+                glob_pattern: glob,
+                error_only,
+            })
         })
-    }).collect();
+        .collect();
 
     if result_appenders.is_empty() {
         return Err(anyhow!("未在 logback.xml 中找到有效的文件 appender"));
@@ -208,8 +224,8 @@ struct RawAppender {
 impl RawAppender {
     fn from_attrs(e: &BytesStart) -> Self {
         let class = get_attr(e, "class").unwrap_or_default();
-        let is_file_appender = class.contains("RollingFileAppender")
-            || class.contains("FileAppender");
+        let is_file_appender =
+            class.contains("RollingFileAppender") || class.contains("FileAppender");
         Self {
             name: get_attr(e, "name").unwrap_or_default(),
             is_file_appender,
@@ -356,10 +372,14 @@ fn pattern_to_glob(pattern: &str) -> String {
                         let mut depth = 1;
                         while let Some(&c) = chars.peek() {
                             chars.next();
-                            if c == '{' { depth += 1; }
+                            if c == '{' {
+                                depth += 1;
+                            }
                             if c == '}' {
                                 depth -= 1;
-                                if depth == 0 { break; }
+                                if depth == 0 {
+                                    break;
+                                }
                             }
                         }
                     }
@@ -390,7 +410,8 @@ fn infer_label_and_group(appender_name: &str, logger_name: Option<&str>) -> (Str
     if let Some(logger) = logger_name {
         let parts: Vec<&str> = logger.split('.').collect();
         /* 取最后一段作为 label */
-        let label = parts.last()
+        let label = parts
+            .last()
             .map(|s| s.to_string())
             .unwrap_or_else(|| appender_name.to_string());
 
@@ -503,8 +524,14 @@ mod tests {
         let app = &config.appenders[0];
         assert_eq!(app.name, "APP_FILE");
         assert_eq!(app.label, "application");
-        assert_eq!(app.file_path, Some("/var/log/app/application.log".to_string()));
-        assert_eq!(app.glob_pattern, Some("/var/log/app/application-*.log".to_string()));
+        assert_eq!(
+            app.file_path,
+            Some("/var/log/app/application.log".to_string())
+        );
+        assert_eq!(
+            app.glob_pattern,
+            Some("/var/log/app/application-*.log".to_string())
+        );
         assert!(!app.error_only);
 
         let err = &config.appenders[1];

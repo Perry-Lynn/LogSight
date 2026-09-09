@@ -6,17 +6,21 @@
  * @LastEditors: fu
  * @Date: 2026-08-26
  */
-use anyhow::{Result, Context, anyhow};
+use anyhow::{anyhow, Context, Result};
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use ssh2::{CheckResult, HashType, KeyboardInteractivePrompt, KnownHostFileKind, Session};
 use std::io::Read;
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use ssh2::{Session, KeyboardInteractivePrompt};
 
-use crate::models::{ServerConfig, AuthType, ConnectTestResult, DirEntry, DirListResult, FileKind, PathValidateResult};
+use crate::models::{
+    AuthType, ConnectTestResult, DirEntry, DirListResult, FileKind, PathValidateResult,
+    ServerConfig,
+};
 
 /* 简易 Password-based KI 提示符：无视任何提示题，全部返回固定密码
-   用于兼容绝大部分 PAM/keyboard-interactive 模式的 SSH 服务器 */
+用于兼容绝大部分 PAM/keyboard-interactive 模式的 SSH 服务器 */
 struct PasswordPrompt {
     password: String,
 }
@@ -49,7 +53,11 @@ fn shell_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 8);
     out.push('\'');
     for ch in s.chars() {
-        if ch == '\'' { out.push_str("'\\''"); } else { out.push(ch); }
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
     }
     out.push('\'');
     out
@@ -65,19 +73,61 @@ pub fn prevalidate_path_str(path: &str) -> std::result::Result<(), String> {
         return Err("路径不能为空".into());
     }
     for b in path.as_bytes() {
-        if *b == 0 { return Err("路径包含 null 字节 (0x00)，可能是攻击载荷，已拦截".into()); }
+        if *b == 0 {
+            return Err("路径包含 null 字节 (0x00)，可能是攻击载荷，已拦截".into());
+        }
         if *b < 0x20 || *b == 0x7f {
-            return Err(format!("路径包含控制字符 0x{:02x}，可能是越权尝试，已拦截", *b));
+            return Err(format!(
+                "路径包含控制字符 0x{:02x}，可能是越权尝试，已拦截",
+                *b
+            ));
         }
     }
     // 拒绝 Windows 盘符 / UNC / URL 协议
-    if path.contains("://") || path.starts_with("\\\\") || (path.len() >= 2 && path.as_bytes()[1] == b':') {
-        return Err("非法路径格式（URL/Windows 盘符/UNC），仅支持 Linux 服务器绝对或 ~ 路径".into());
+    if path.contains("://")
+        || path.starts_with("\\\\")
+        || (path.len() >= 2 && path.as_bytes()[1] == b':')
+    {
+        return Err(
+            "非法路径格式（URL/Windows 盘符/UNC），仅支持 Linux 服务器绝对或 ~ 路径".into(),
+        );
     }
     // 拒绝任何包含 ".." 的独立组件（避免目录穿越）
     for component in path.split(|c| c == '/' || c == '\\') {
         if component == ".." {
             return Err("路径中含 \"..\" 片段（目录穿越尝试），已拦截。如需返回上一级请在 Tree 中点击父目录。".into());
+        }
+    }
+    Ok(())
+}
+
+/* Glob 路径会原样交给远端 shell 展开，因此必须使用比普通路径更严格的字符白名单。 */
+pub fn prevalidate_glob_path_str(path: &str) -> std::result::Result<(), String> {
+    prevalidate_path_str(path)?;
+    if !(path.starts_with('/') || path == "~" || path.starts_with("~/")) {
+        return Err("通配路径必须是绝对路径或以 ~/ 开头".into());
+    }
+    for ch in path.chars() {
+        let allowed = ch.is_ascii_alphanumeric()
+            || matches!(
+                ch,
+                '/' | '.'
+                    | '_'
+                    | '-'
+                    | '@'
+                    | '+'
+                    | '%'
+                    | ','
+                    | ':'
+                    | '='
+                    | '*'
+                    | '?'
+                    | '['
+                    | ']'
+                    | '~'
+            );
+        if !allowed {
+            return Err(format!("通配路径包含不允许的字符 {:?}", ch));
         }
     }
     Ok(())
@@ -96,7 +146,9 @@ fn normalize_linux_path(raw: &str) -> String {
     let mut prev_slash = false;
     for ch in expanded.chars() {
         if ch == '/' {
-            if !prev_slash { s.push(ch); }
+            if !prev_slash {
+                s.push(ch);
+            }
             prev_slash = true;
         } else {
             s.push(ch);
@@ -108,6 +160,47 @@ fn normalize_linux_path(raw: &str) -> String {
         s.pop();
     }
     s
+}
+
+/* 严格校验 SSH 主机身份，避免首次连接时无条件信任中间人。 */
+fn verify_host_key(sess: &Session, server: &ServerConfig) -> Result<()> {
+    let (key, _) = sess
+        .host_key()
+        .ok_or_else(|| anyhow!("SSH 服务端没有提供主机公钥"))?;
+    let fingerprint = sess
+        .host_key_hash(HashType::Sha256)
+        .map(|hash| B64.encode(hash))
+        .unwrap_or_else(|| "unknown".to_string());
+    let known_hosts_path = PathBuf::from(shellexpand::tilde("~/.ssh/known_hosts").to_string());
+    if !known_hosts_path.is_file() {
+        return Err(anyhow!(
+            "未找到 {:?}，已拒绝无主机指纹校验的连接；请先用 OpenSSH 连接一次或配置 known_hosts。当前指纹: SHA256:{}",
+            known_hosts_path, fingerprint
+        ));
+    }
+    let mut known_hosts = sess.known_hosts().context("初始化 SSH known_hosts 失败")?;
+    known_hosts
+        .read_file(&known_hosts_path, KnownHostFileKind::OpenSSH)
+        .with_context(|| format!("读取 known_hosts 失败: {:?}", known_hosts_path))?;
+    let host = if server.port == 22 {
+        server.host.clone()
+    } else {
+        format!("[{}]:{}", server.host, server.port)
+    };
+    match known_hosts.check(&host, key) {
+        CheckResult::Match => Ok(()),
+        CheckResult::NotFound => Err(anyhow!(
+            "known_hosts 中没有 {} 的记录，已拒绝首次无确认连接；当前指纹: SHA256:{}",
+            host,
+            fingerprint
+        )),
+        CheckResult::Mismatch => Err(anyhow!(
+            "{} 的 SSH 主机指纹发生变化，疑似中间人攻击；当前指纹: SHA256:{}",
+            host,
+            fingerprint
+        )),
+        CheckResult::Failure => Err(anyhow!("校验 {} 的 SSH 主机指纹失败", host)),
+    }
 }
 
 impl SSHService {
@@ -161,14 +254,20 @@ impl SSHService {
         if norm.is_empty() {
             return PathValidateResult {
                 normalized_path: norm,
-                exists: false, is_directory: false, readable: false, safe: false,
+                exists: false,
+                is_directory: false,
+                readable: false,
+                safe: false,
                 reason: Some("路径展开后为空".into()),
             };
         }
         if !norm.starts_with('/') {
             return PathValidateResult {
                 normalized_path: norm,
-                exists: false, is_directory: false, readable: false, safe: false,
+                exists: false,
+                is_directory: false,
+                readable: false,
+                safe: false,
                 reason: Some("路径必须是绝对路径（以 / 开头）或 ~ 开头相对主目录".into()),
             };
         }
@@ -177,40 +276,63 @@ impl SSHService {
         let pwd = password_plain.map(|s| s.to_string());
         let pem = private_key_pem_plain.map(|s| s.to_string());
         let path_for_blocking = norm.clone();
-        let join_res = tokio::task::spawn_blocking(move || -> anyhow::Result<(bool, bool, bool, Option<String>)> {
-            let ssh = Self::connect_sync(&server, pwd.as_deref(), pem.as_deref())?;
-            let sftp = ssh.session.sftp().map_err(|e| anyhow!("SFTP 会话失败: {e}"))?;
-            let stat = sftp.stat(std::path::Path::new(&path_for_blocking));
-            let (exists, is_dir, readable) = match stat {
-                Ok(st) => {
-                    let is_dir = st.file_type() == ssh2::FileType::Directory;
-                    // 判断可读性：尝试 open_mode read，成功即可读（不读取内容，立即 drop）
-                    let readable = if is_dir {
-                        sftp.opendir(PathBuf::from(&path_for_blocking)).is_ok()
-                    } else {
-                        use ssh2::{OpenFlags, OpenType};
-                        sftp.open_mode(PathBuf::from(&path_for_blocking), OpenFlags::READ, 0, OpenType::File).is_ok()
-                    };
-                    (true, is_dir, readable)
-                }
-                Err(_e) => (false, false, false),
-            };
-            drop(sftp); drop(ssh);
-            Ok((exists, is_dir, readable, None))
-        }).await;
+        let join_res = tokio::task::spawn_blocking(
+            move || -> anyhow::Result<(bool, bool, bool, Option<String>)> {
+                let ssh = Self::connect_sync(&server, pwd.as_deref(), pem.as_deref())?;
+                let sftp = ssh
+                    .session
+                    .sftp()
+                    .map_err(|e| anyhow!("SFTP 会话失败: {e}"))?;
+                let stat = sftp.stat(std::path::Path::new(&path_for_blocking));
+                let (exists, is_dir, readable) = match stat {
+                    Ok(st) => {
+                        let is_dir = st.file_type() == ssh2::FileType::Directory;
+                        // 判断可读性：尝试 open_mode read，成功即可读（不读取内容，立即 drop）
+                        let readable = if is_dir {
+                            sftp.opendir(PathBuf::from(&path_for_blocking)).is_ok()
+                        } else {
+                            use ssh2::{OpenFlags, OpenType};
+                            sftp.open_mode(
+                                PathBuf::from(&path_for_blocking),
+                                OpenFlags::READ,
+                                0,
+                                OpenType::File,
+                            )
+                            .is_ok()
+                        };
+                        (true, is_dir, readable)
+                    }
+                    Err(_e) => (false, false, false),
+                };
+                drop(sftp);
+                drop(ssh);
+                Ok((exists, is_dir, readable, None))
+            },
+        )
+        .await;
         match join_res {
             Ok(Ok((exists, is_dir, readable, _))) => PathValidateResult {
                 normalized_path: norm,
-                exists, is_directory: is_dir, readable, safe: true, reason: None,
+                exists,
+                is_directory: is_dir,
+                readable,
+                safe: true,
+                reason: None,
             },
             Ok(Err(e)) => PathValidateResult {
                 normalized_path: norm,
-                exists: false, is_directory: false, readable: false, safe: true,
+                exists: false,
+                is_directory: false,
+                readable: false,
+                safe: true,
                 reason: Some(format!("远程校验失败: {:#}", e)),
             },
             Err(e) => PathValidateResult {
                 normalized_path: norm,
-                exists: false, is_directory: false, readable: false, safe: false,
+                exists: false,
+                is_directory: false,
+                readable: false,
+                safe: false,
                 reason: Some(format!("校验任务 Panic: {e}")),
             },
         }
@@ -234,7 +356,9 @@ impl SSHService {
         }
         let norm = normalize_linux_path(remote_path);
         if !norm.starts_with('/') {
-            return Err(anyhow!("路径必须是绝对路径（以 / 开头）或 ~ 开头相对主目录"));
+            return Err(anyhow!(
+                "路径必须是绝对路径（以 / 开头）或 ~ 开头相对主目录"
+            ));
         }
         let server = server.clone();
         let pwd = password_plain.map(|s| s.to_string());
@@ -242,15 +366,29 @@ impl SSHService {
         let path_for_blocking = norm.clone();
         tokio::task::spawn_blocking(move || -> Result<DirListResult> {
             let ssh = Self::connect_sync(&server, pwd.as_deref(), pem.as_deref())?;
-            let sftp = ssh.session.sftp().map_err(|e| anyhow!("SFTP 会话失败: {e}"))?;
+            let sftp = ssh
+                .session
+                .sftp()
+                .map_err(|e| anyhow!("SFTP 会话失败: {e}"))?;
             let mut entries: Vec<DirEntry> = Vec::new();
-            let files = sftp.readdir(PathBuf::from(&path_for_blocking))
-                .map_err(|e| anyhow!("无法读取目录 {:?}：可能是不存在或当前用户({})无读权限。\n详细错误: {}", path_for_blocking, server.username, e))?;
+            let files = sftp
+                .readdir(PathBuf::from(&path_for_blocking))
+                .map_err(|e| {
+                    anyhow!(
+                        "无法读取目录 {:?}：可能是不存在或当前用户({})无读权限。\n详细错误: {}",
+                        path_for_blocking,
+                        server.username,
+                        e
+                    )
+                })?;
             for (pbuf, st) in files.into_iter() {
-                let name = pbuf.file_name()
+                let name = pbuf
+                    .file_name()
                     .map(|os| os.to_string_lossy().to_string())
                     .unwrap_or_default();
-                if name.is_empty() { continue; }
+                if name.is_empty() {
+                    continue;
+                }
                 let abs_path = pbuf.to_string_lossy().to_string();
                 let kind = match st.file_type() {
                     ssh2::FileType::Directory => FileKind::Directory,
@@ -265,7 +403,8 @@ impl SSHService {
                     sftp.opendir(PathBuf::from(&abs_path)).is_ok()
                 } else {
                     use ssh2::{OpenFlags, OpenType};
-                    sftp.open_mode(PathBuf::from(&abs_path), OpenFlags::READ, 0, OpenType::File).is_ok()
+                    sftp.open_mode(PathBuf::from(&abs_path), OpenFlags::READ, 0, OpenType::File)
+                        .is_ok()
                 };
                 entries.push(DirEntry {
                     abs_path: abs_path.clone(),
@@ -288,7 +427,8 @@ impl SSHService {
                     _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
                 }
             });
-            drop(sftp); drop(ssh);
+            drop(sftp);
+            drop(ssh);
             Ok(DirListResult {
                 normalized_path: path_for_blocking,
                 entries,
@@ -308,14 +448,24 @@ impl SSHService {
         // 1. TCP + handshake
         let addr = format!("{}:{}", server.host, server.port);
         let tcp = TcpStream::connect_timeout(
-            &addr.parse().with_context(|| format!("无效的地址: {}", addr))?,
+            &addr
+                .parse()
+                .with_context(|| format!("无效的地址: {}", addr))?,
             Duration::from_secs(15),
-        ).with_context(|| format!("无法连接到 {}:{} (TCP超时或拒绝连接)", server.host, server.port))?;
+        )
+        .with_context(|| {
+            format!(
+                "无法连接到 {}:{} (TCP超时或拒绝连接)",
+                server.host, server.port
+            )
+        })?;
         tcp.set_read_timeout(Some(Duration::from_secs(120)))?;
         tcp.set_write_timeout(Some(Duration::from_secs(60)))?;
         let mut sess = Session::new().context("创建 libssh2 Session 失败")?;
         sess.set_tcp_stream(tcp.try_clone().context("克隆 TCP 流失败")?);
-        sess.handshake().context("SSH 协议握手失败，可能不是 SSH 服务或网络中断")?;
+        sess.handshake()
+            .context("SSH 协议握手失败，可能不是 SSH 服务或网络中断")?;
+        verify_host_key(&sess, server)?;
 
         // 2. 认证
         match server.auth_type {
@@ -328,7 +478,9 @@ impl SSHService {
                 match sess.userauth_password(&server.username, &p) {
                     Ok(_) => {}
                     Err(_e1) => {
-                        let mut prompter = PasswordPrompt { password: p.to_string() };
+                        let mut prompter = PasswordPrompt {
+                            password: p.to_string(),
+                        };
                         sess.userauth_keyboard_interactive(&server.username, &mut prompter)
                             .map_err(|e| anyhow!(
                                 "密码认证未通过（password + keyboard-interactive 两种方式均返回错误）。\n\
@@ -340,7 +492,9 @@ impl SSHService {
                 }
             }
             AuthType::PrivateKey => {
-                let (tmp_path, delete_after): (Option<PathBuf>, bool) = if let Some(pem) = private_key_pem_plain.as_ref().filter(|s| !s.is_empty()) {
+                let (tmp_path, delete_after): (Option<PathBuf>, bool) = if let Some(pem) =
+                    private_key_pem_plain.as_ref().filter(|s| !s.is_empty())
+                {
                     let tmp = std::env::temp_dir().join(format!("logsight_key_{}", rand_suffix()));
                     std::fs::write(&tmp, pem.as_bytes())
                         .with_context(|| format!("写临时私钥文件失败: {:?}", tmp))?;
@@ -361,16 +515,24 @@ impl SSHService {
                     return Err(anyhow!("私钥文件不存在: {:?}", key_path));
                 }
                 let res = sess.userauth_pubkey_file(&server.username, None, key_path, None);
-                if delete_after { let _ = std::fs::remove_file(key_path); }
+                if delete_after {
+                    let _ = std::fs::remove_file(key_path);
+                }
                 res.map_err(|e| anyhow!("私钥认证失败: {}", e))?;
             }
-            AuthType::ConfigFile => return Err(anyhow!("配置文件认证模式暂未实现，请改用密码或私钥模式")),
+            AuthType::ConfigFile => {
+                return Err(anyhow!("配置文件认证模式暂未实现，请改用密码或私钥模式"))
+            }
         }
 
         if !sess.authenticated() {
             return Err(anyhow!("认证未通过，请检查用户名/密码/私钥"));
         }
-        Ok(SSHSession { session: sess, stream: tcp, server_id: server.id.clone() })
+        Ok(SSHSession {
+            session: sess,
+            stream: tcp,
+            server_id: server.id.clone(),
+        })
     }
 
     /*
@@ -400,6 +562,7 @@ impl SSHService {
             let mut sess = Session::new().context("创建 libssh2 Session 失败")?;
             sess.set_tcp_stream(tcp.try_clone().context("克隆 TCP 流失败")?);
             sess.handshake().context("SSH 协议握手失败，可能不是 SSH 服务或网络中断")?;
+            verify_host_key(&sess, &server)?;
 
             // 3. 按认证方式执行 userauth
             match server.auth_type {
@@ -533,7 +696,9 @@ impl SSHService {
     ) -> Result<(String, String, i32)> {
         let start = Instant::now();
         let mut channel = sess.channel_session().context("创建 SSH channel 失败")?;
-        channel.exec(command).with_context(|| format!("执行命令失败: {}", command))?;
+        channel
+            .exec(command)
+            .with_context(|| format!("执行命令失败: {}", command))?;
 
         let mut stdout = String::new();
         let mut stderr = String::new();
@@ -580,13 +745,24 @@ impl SSHService {
         stop_rx: std::sync::mpsc::Receiver<()>,
     ) {
         let _ = || -> Result<()> {
-            let SSHSession { session, stream: _tcp, server_id: _ } = ssh;
-            let mut channel = session.channel_session()
+            let SSHSession {
+                session,
+                stream: _tcp,
+                server_id: _,
+            } = ssh;
+            let mut channel = session
+                .channel_session()
                 .map_err(|e| anyhow!("open channel fail: {e}"))?;
             // 请求 PTY，防止远端 buffer 过大
             channel.request_pty("xterm-256color", None, None).ok();
-            let cmd = format!("tail -n {} -F -- {}", lines_backtrack, shell_escape(&remote_path));
-            channel.exec(&cmd).map_err(|e| anyhow!("exec tail fail: {e}"))?;
+            let cmd = format!(
+                "tail -n {} -F -- {}",
+                lines_backtrack,
+                shell_escape(&remote_path)
+            );
+            channel
+                .exec(&cmd)
+                .map_err(|e| anyhow!("exec tail fail: {e}"))?;
 
             // 将 channel 拆为读流，用 BufReader 逐行读
             use std::io::{BufRead, BufReader};
@@ -621,4 +797,22 @@ fn rand_suffix() -> String {
         s.push((b'a' + rng.gen_range(0..26)) as char);
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn glob_paths_accept_safe_absolute_patterns() {
+        assert!(prevalidate_glob_path_str("/var/log/app/application-*.log").is_ok());
+        assert!(prevalidate_glob_path_str("~/logs/app-[0-9]*.log").is_ok());
+    }
+
+    #[test]
+    fn glob_paths_reject_shell_metacharacters_and_relative_paths() {
+        assert!(prevalidate_glob_path_str("/var/log/$(whoami)-*.log").is_err());
+        assert!(prevalidate_glob_path_str("/var/log/a;touch /tmp/pwned*.log").is_err());
+        assert!(prevalidate_glob_path_str("logs/*.log").is_err());
+    }
 }

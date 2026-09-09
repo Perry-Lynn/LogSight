@@ -6,17 +6,18 @@
  * @LastEditors: fu
  * @Date: 2026-08-26
  */
-use anyhow::{Result, anyhow};
-use chrono::{Utc, Local, TimeZone};
-use std::collections::HashMap;
-use parking_lot::Mutex;
+use anyhow::{anyhow, Result};
+use chrono::{Local, TimeZone, Utc};
 use once_cell::sync::Lazy;
+use parking_lot::Mutex;
+use std::collections::HashMap;
 use tauri::{AppHandle, Emitter};
 
 use crate::models::{
-    ServerConfig, LogLine, LogLevel, SessionStatus,
-    parse_log_fields, log_source_presets, LogSourceProbeResult, LogbackServerConfig,
+    log_source_presets, parse_log_fields, LogLevel, LogLine, LogSourceProbeResult,
+    LogbackServerConfig, ServerConfig, SessionStatus,
 };
+use crate::services::ssh::prevalidate_glob_path_str;
 use crate::services::SSHService;
 
 /* 活动日志会话注册表：session_id -> 停止信号发送端（std sync mpsc） */
@@ -85,38 +86,68 @@ impl LogStreamService {
         let (async_line_tx, mut async_line_rx) =
             tokio::sync::mpsc::channel::<std::result::Result<String, String>>(512);
 
-        Self::emit_status(&app, &sid, &server_id, SessionStatus::Connecting, Some("正在建立 SSH 连接..."));
+        Self::emit_status(
+            &app,
+            &sid,
+            &server_id,
+            SessionStatus::Connecting,
+            Some("正在建立 SSH 连接..."),
+        );
 
         // 1. tokio task：负责建立 SSH 连接 + 启动 blocking 线程读取 tail + 转发事件到 Tauri
         tauri::async_runtime::spawn(async move {
             // 1.1 建立 SSH 连接（仅用于探测连通性，真正的 tail 线程会重新建连接）
-            let _ssh = match SSHService::connect(
+            let ssh_probe = match SSHService::connect(
                 &server,
                 password_plain.as_deref(),
                 private_key_pem_plain.as_deref(),
-            ).await {
+            )
+            .await
+            {
                 Ok(s) => s,
                 Err(e) => {
-                    Self::emit_status(&app, &sid, &server_id, SessionStatus::Error,
-                        Some(&format!("SSH 连接失败: {:#}", e)));
+                    Self::emit_status(
+                        &app,
+                        &sid,
+                        &server_id,
+                        SessionStatus::Error,
+                        Some(&format!("SSH 连接失败: {:#}", e)),
+                    );
                     LIVE_SESSIONS.lock().remove(&sid);
                     return;
                 }
             };
-            Self::emit_status(&app, &sid, &server_id, SessionStatus::Connected,
-                Some("SSH 已连接，准备启动 tail..."));
+            // 该连接只用于探测；tail 和可选脚本各自使用独立会话，避免长期占用空闲连接。
+            drop(ssh_probe);
+            Self::emit_status(
+                &app,
+                &sid,
+                &server_id,
+                SessionStatus::Connected,
+                Some("SSH 已连接，准备启动 tail..."),
+            );
 
             // 1.2 依次执行连接后自定义脚本：每个脚本独立建连接，避免抢 tail-f session
-            for script in &server.run_scripts {
-                if script.content.trim().is_empty() { continue; }
-                if script.delay_ms > 0 {
-                    tokio::time::sleep(std::time::Duration::from_millis(script.delay_ms)).await;
-                }
-                match SSHService::connect(&server, password_plain.as_deref(), private_key_pem_plain.as_deref()).await {
-                    Ok(mut s_ssh) => {
-                        let _ = SSHService::exec_once(&mut s_ssh, &script.content, 15).await;
+            if server.run_scripts_enabled {
+                for script in &server.run_scripts {
+                    if script.content.trim().is_empty() {
+                        continue;
                     }
-                    Err(e) => tracing::warn!("运行脚本 SSH 连接失败: {:#}", e),
+                    if script.delay_ms > 0 {
+                        tokio::time::sleep(std::time::Duration::from_millis(script.delay_ms)).await;
+                    }
+                    match SSHService::connect(
+                        &server,
+                        password_plain.as_deref(),
+                        private_key_pem_plain.as_deref(),
+                    )
+                    .await
+                    {
+                        Ok(mut s_ssh) => {
+                            let _ = SSHService::exec_once(&mut s_ssh, &script.content, 15).await;
+                        }
+                        Err(e) => tracing::warn!("运行脚本 SSH 连接失败: {:#}", e),
+                    }
                 }
             }
 
@@ -137,30 +168,50 @@ impl LogStreamService {
                         // blocking 线程内：重新建 SSH 连接（ssh2 Sync Session 非 Send 无法跨线程）
                         let runtime2 = tokio::runtime::Handle::try_current().ok();
                         let ssh2 = match runtime2 {
-                            Some(rt) => rt.block_on(SSHService::connect(&srv2, pwd2.as_deref(), pem2.as_deref())),
+                            Some(rt) => rt.block_on(SSHService::connect(
+                                &srv2,
+                                pwd2.as_deref(),
+                                pem2.as_deref(),
+                            )),
                             None => {
-                                let rt3 = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-                                rt3.block_on(SSHService::connect(&srv2, pwd2.as_deref(), pem2.as_deref()))
+                                let rt3 = tokio::runtime::Builder::new_current_thread()
+                                    .enable_all()
+                                    .build()
+                                    .unwrap();
+                                rt3.block_on(SSHService::connect(
+                                    &srv2,
+                                    pwd2.as_deref(),
+                                    pem2.as_deref(),
+                                ))
                             }
                         };
                         let Ok(ssh_sess) = ssh2 else {
                             let _ = tx_worker.send(Err("tail session reconnect fail".to_string()));
                             return;
                         };
-                        SSHService::stream_tail_f_blocking(ssh_sess, remote_path_cloned, lines_bt, tx_worker, stop_rx);
+                        SSHService::stream_tail_f_blocking(
+                            ssh_sess,
+                            remote_path_cloned,
+                            lines_bt,
+                            tx_worker,
+                            stop_rx,
+                        );
                     })
                     .ok();
                 // 转发：std mpsc rx -> tokio mpsc tx
                 let app_bridge = app.clone();
                 let sid_bridge = sid.clone();
                 let srv_bridge = server_id.clone();
-                let _ = sid_bridge; let _ = srv_bridge;
+                let _ = sid_bridge;
+                let _ = srv_bridge;
                 std::thread::spawn(move || {
                     let _ = &app_bridge;
                     loop {
                         match rx.recv() {
                             Ok(msg) => {
-                                if async_line_tx.blocking_send(msg).is_err() { break; }
+                                if async_line_tx.blocking_send(msg).is_err() {
+                                    break;
+                                }
                             }
                             Err(_) => break,
                         }
@@ -231,6 +282,16 @@ impl LogStreamService {
         }
     }
 
+    /* 应用退出时停止所有实时日志流，保证后端不会遗留阻塞线程。 */
+    pub fn stop_all() -> usize {
+        let sessions = std::mem::take(&mut *LIVE_SESSIONS.lock());
+        let count = sessions.len();
+        for (_, tx) in sessions {
+            let _ = tx.send(());
+        }
+        count
+    }
+
     /* 分页获取历史日志 */
     pub async fn fetch_history(
         server: &ServerConfig,
@@ -255,7 +316,11 @@ impl LogStreamService {
         let (stdout, _stderr, exit) = SSHService::exec_once(&mut ssh, &cmd, 45).await?;
         drop(ssh);
         if exit != 0 {
-            return Err(anyhow!("命令退出码={}，路径无权限或不存在: {}", exit, remote_path));
+            return Err(anyhow!(
+                "命令退出码={}，路径无权限或不存在: {}",
+                exit,
+                remote_path
+            ));
         }
         let raws: Vec<String> = stdout.lines().map(|s| s.to_string()).collect();
         let mut lines = LogLine::from_raw_batch(&raws, &server.id, Local::now().timestamp_millis());
@@ -277,29 +342,34 @@ impl LogStreamService {
         password_plain: Option<&str>,
         private_key_pem_plain: Option<&str>,
     ) -> Result<Vec<LogLine>> {
-        if end_ms < start_ms { return Ok(vec![]); }
+        if end_ms < start_ms {
+            return Ok(vec![]);
+        }
         // 日志时间戳不带时区。按用户在界面选择的墙上时间直接与日志文本比较，
         // 不能按服务器 OS 时区换算：JVM/Logback 时区可能与宿主机或容器时区不同。
         let mut ssh = SSHService::connect(server, password_plain, private_key_pem_plain).await?;
-        let start_str = Local.timestamp_millis_opt(start_ms)
-            .earliest().map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
+        let start_str = Local
+            .timestamp_millis_opt(start_ms)
+            .earliest()
+            .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
             .unwrap_or_else(|| String::from("1970-01-01 00:00:00"));
-        let end_str = Local.timestamp_millis_opt(end_ms)
-            .earliest().map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
+        let end_str = Local
+            .timestamp_millis_opt(end_ms)
+            .earliest()
+            .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
             .unwrap_or_else(|| String::from("2100-01-01 00:00:00"));
         // 纯时间日志没有日期，只能按所选范围的开始日期解释。
-        let selected_date = Local.timestamp_millis_opt(start_ms)
-            .earliest().map(|t| t.format("%Y-%m-%d").to_string())
+        let selected_date = Local
+            .timestamp_millis_opt(start_ms)
+            .earliest()
+            .map(|t| t.format("%Y-%m-%d").to_string())
             .unwrap_or_default();
         /* 是否 glob 多文件模式（Logback 按小时滚动如 application-2026-09-02_12.log，
          * 用 application-*.log 或 application-2026-09-02_0*.log 可跨文件查时间段） */
-        let uses_glob = remote_path.contains('*') || remote_path.contains('?') || remote_path.contains('[');
+        let uses_glob =
+            remote_path.contains('*') || remote_path.contains('?') || remote_path.contains('[');
         if uses_glob {
-            // 安全校验：glob 不能带引号/空格/重定向等，避免命令注入（路径原样交给远端 shell 展开）
-            let bad = remote_path.chars().any(|c| matches!(c, '\'' | '"' | ' ' | '\t' | '$' | '`' | ';' | '&' | '|' | '<' | '>' | '(' | ')' | '\\'));
-            if bad {
-                return Err(anyhow!("通配路径包含不允许的字符（空格/引号/重定向等），请只使用字母数字与 /*?[0-9]-"));
-            }
+            prevalidate_glob_path_str(remote_path).map_err(|e| anyhow!(e))?;
         }
         /*
          * 日志按时间递增写入。用 tac 从文件末尾反向扫描，遇到早于开始时间的首行立即 exit，
@@ -365,7 +435,8 @@ impl LogStreamService {
             forward_source, selected_date, start_str, end_str, forward_awk,
             offset_lines, max_lines, keep_lines, forward_page_awk
         );
-        let (mut stdout, mut stderr, mut exit) = SSHService::exec_once(&mut ssh, &fast_cmd, 90).await?;
+        let (mut stdout, mut stderr, mut exit) =
+            SSHService::exec_once(&mut ssh, &fast_cmd, 90).await?;
 
         // output.log 可能由多个进程并发写入或混有乱序记录。反向扫描为了提速会在首条
         // 早于范围的记录处停止；若快速结果为空，正向完整扫描一次，避免误报“没有日志”。
@@ -393,7 +464,8 @@ impl LogStreamService {
             drop(ssh);
             return Err(anyhow!(
                 "按时间查询失败（退出码={}，stderr={}）",
-                exit, stderr.trim()
+                exit,
+                stderr.trim()
             ));
         }
         drop(ssh);
@@ -421,8 +493,14 @@ impl LogStreamService {
             return Ok(vec![]);
         }
         let mut base_opts = String::from("--color=never -h -n");
-        if case_insensitive { base_opts.push_str(" -i"); }
-        if regex { base_opts.push_str(" -E"); } else { base_opts.push_str(" -F"); }
+        if case_insensitive {
+            base_opts.push_str(" -i");
+        }
+        if regex {
+            base_opts.push_str(" -E");
+        } else {
+            base_opts.push_str(" -F");
+        }
         let ci_flag = if case_insensitive { " -i" } else { "" };
 
         // 多个关键字用 AND 管道：第一个 grep 文件，后续每个词再 pipe grep
@@ -434,11 +512,17 @@ impl LogStreamService {
             format!("cat {} 2>/dev/null", shell_escape(remote_path))
         } else {
             // 第一个关键字 grep 文件
-            let limit = if has_multi_pipe { "" } else { &format!("-m {}", max_lines) };
+            let limit = if has_multi_pipe {
+                ""
+            } else {
+                &format!("-m {}", max_lines)
+            };
             format!(
                 "grep {opts} {limit} -- {kw} {path} 2>/dev/null",
-                opts = base_opts, limit = limit,
-                kw = shell_escape(kw_terms[0]), path = shell_escape(remote_path),
+                opts = base_opts,
+                limit = limit,
+                kw = shell_escape(kw_terms[0]),
+                path = shell_escape(remote_path),
             )
         };
 
@@ -446,7 +530,8 @@ impl LogStreamService {
         for term in kw_terms.iter().skip(1) {
             cmd.push_str(&format!(
                 " | grep{ci} -- {term}",
-                ci = ci_flag, term = shell_escape(term)
+                ci = ci_flag,
+                term = shell_escape(term)
             ));
         }
 
@@ -454,7 +539,8 @@ impl LogStreamService {
         for term in &ex_terms {
             cmd.push_str(&format!(
                 " | grep{ci} -v -F -- {term}",
-                ci = ci_flag, term = shell_escape(term)
+                ci = ci_flag,
+                term = shell_escape(term)
             ));
         }
 
@@ -508,12 +594,10 @@ impl LogStreamService {
             return Err(anyhow!("traceId 不能为空"));
         }
         /* glob 安全校验：路径原样交给远端 shell 展开，禁止注入字符 */
-        let uses_glob = remote_path.contains('*') || remote_path.contains('?') || remote_path.contains('[');
+        let uses_glob =
+            remote_path.contains('*') || remote_path.contains('?') || remote_path.contains('[');
         if uses_glob {
-            let bad = remote_path.chars().any(|c| matches!(c, '\'' | '"' | ' ' | '\t' | '$' | '`' | ';' | '&' | '|' | '<' | '>' | '(' | ')' | '\\'));
-            if bad {
-                return Err(anyhow!("通配路径包含不允许的字符（空格/引号/重定向等）"));
-            }
+            prevalidate_glob_path_str(remote_path).map_err(|e| anyhow!(e))?;
         }
         let path_arg = if uses_glob {
             remote_path.to_string()
@@ -535,7 +619,9 @@ impl LogStreamService {
         for raw in stdout.lines() {
             // 精确比对结构化出来的 trace_id
             if let Some(f) = parse_log_fields(raw) {
-                if f.trace_id.as_deref() != Some(tid) { continue; }
+                if f.trace_id.as_deref() != Some(tid) {
+                    continue;
+                }
                 lines.push(LogLine {
                     line_no: 0,
                     raw: raw.to_string(),
@@ -590,28 +676,35 @@ impl LogStreamService {
         }
 
         let presets: Vec<ProbePreset> = if let Some(config) = logback_config {
-            config.appenders.iter().filter_map(|app| {
-                let pattern = app.glob_pattern.as_ref().or(app.file_path.as_ref())?;
-                /* 如果 pattern 是绝对路径则直接使用，否则拼接 base_dir */
-                let glob_path = if pattern.starts_with('/') {
-                    pattern.clone()
-                } else {
-                    format!("{}/{}", base, pattern)
-                };
-                Some(ProbePreset {
-                    key: app.name.clone(),
-                    label: app.label.clone(),
-                    group: app.group.clone(),
-                    glob_path,
+            config
+                .appenders
+                .iter()
+                .filter_map(|app| {
+                    let pattern = app.glob_pattern.as_ref().or(app.file_path.as_ref())?;
+                    /* 如果 pattern 是绝对路径则直接使用，否则拼接 base_dir */
+                    let glob_path = if pattern.starts_with('/') {
+                        pattern.clone()
+                    } else {
+                        format!("{}/{}", base, pattern)
+                    };
+                    Some(ProbePreset {
+                        key: app.name.clone(),
+                        label: app.label.clone(),
+                        group: app.group.clone(),
+                        glob_path,
+                    })
                 })
-            }).collect()
+                .collect()
         } else {
-            log_source_presets().into_iter().map(|p| ProbePreset {
-                key: p.key,
-                label: p.label,
-                group: p.group,
-                glob_path: format!("{}/{}", base, p.rel_pattern),
-            }).collect()
+            log_source_presets()
+                .into_iter()
+                .map(|p| ProbePreset {
+                    key: p.key,
+                    label: p.label,
+                    group: p.group,
+                    glob_path: format!("{}/{}", base, p.rel_pattern),
+                })
+                .collect()
         };
 
         if presets.is_empty() {
@@ -645,7 +738,11 @@ impl LogStreamService {
         let (stdout, stderr, exit) = SSHService::exec_once(&mut ssh, &script, 30).await?;
         drop(ssh);
         if exit != 0 {
-            return Err(anyhow!("探测日志源失败（退出码={}）: {}", exit, stderr.trim()));
+            return Err(anyhow!(
+                "探测日志源失败（退出码={}）: {}",
+                exit,
+                stderr.trim()
+            ));
         }
 
         // 解析探测输出
@@ -665,7 +762,9 @@ impl LogStreamService {
                 continue;
             }
             let parts: Vec<&str> = line.splitn(5, '|').collect();
-            if parts.len() < 5 { continue; }
+            if parts.len() < 5 {
+                continue;
+            }
             let count: u32 = parts[1].trim().parse().unwrap_or(0);
             let bytes: u64 = parts[2].trim().parse().unwrap_or(0);
             let last = parts[3].trim().to_string();
@@ -677,10 +776,11 @@ impl LogStreamService {
         fallback_files.sort_by(|a, b| b.1.cmp(&a.1));
         if !fallback_files.is_empty() {
             diagnostic_listing = Some(
-                fallback_files.iter()
+                fallback_files
+                    .iter()
                     .map(|(p, _)| p.rsplit('/').next().unwrap_or(p).to_string())
                     .collect::<Vec<_>>()
-                    .join(", ")
+                    .join(", "),
             );
         }
 
@@ -692,10 +792,22 @@ impl LogStreamService {
                     map.remove(&p.key).unwrap_or((0, 0, String::new(), 0));
                 let (latest_file, latest_mtime_ms, actual_exists) = if count > 0 {
                     /* glob 匹配成功：last 已是完整绝对路径 */
-                    (Some(last.clone()), if mt > 0 { Some(mt * 1000) } else { None }, true)
+                    (
+                        Some(last.clone()),
+                        if mt > 0 { Some(mt * 1000) } else { None },
+                        true,
+                    )
                 } else if let Some((fb_path, fb_mt)) = fallback_files.first() {
                     /* glob 未匹配：回退到目录中最新的 .log 文件（完整路径） */
-                    (Some(fb_path.clone()), if *fb_mt > 0 { Some(*fb_mt * 1000) } else { None }, true)
+                    (
+                        Some(fb_path.clone()),
+                        if *fb_mt > 0 {
+                            Some(*fb_mt * 1000)
+                        } else {
+                            None
+                        },
+                        true,
+                    )
                 } else {
                     (None, None, false)
                 };
@@ -705,11 +817,21 @@ impl LogStreamService {
                     group: p.group,
                     glob_path: p.glob_path,
                     exists: actual_exists,
-                    file_count: if count > 0 { count } else if latest_file.is_some() { 1 } else { 0 },
+                    file_count: if count > 0 {
+                        count
+                    } else if latest_file.is_some() {
+                        1
+                    } else {
+                        0
+                    },
                     total_bytes: bytes,
                     latest_file,
                     latest_mtime_ms,
-                    diagnostic_listing: if i == 0 { diagnostic_listing.clone() } else { None },
+                    diagnostic_listing: if i == 0 {
+                        diagnostic_listing.clone()
+                    } else {
+                        None
+                    },
                 }
             })
             .collect();
@@ -721,7 +843,11 @@ fn shell_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 8);
     out.push('\'');
     for ch in s.chars() {
-        if ch == '\'' { out.push_str("'\\''"); } else { out.push(ch); }
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
     }
     out.push('\'');
     out

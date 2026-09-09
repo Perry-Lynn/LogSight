@@ -64,6 +64,7 @@ type FormValues = {
   use_ssh_agent: boolean;
   ssh_agent_path?: string;
   use_mfa: boolean;
+  run_scripts_enabled: boolean;
   run_scripts: RunScript[];
   description: string;
   auth_type: AuthType;
@@ -118,6 +119,7 @@ const ServerConnectionDialog: React.FC<Props> = ({
       use_ssh_agent: false,
       ssh_agent_path: '',
       use_mfa: false,
+      run_scripts_enabled: false,
       run_scripts: [],
       description: '',
       auth_type: 'Password',
@@ -137,6 +139,7 @@ const ServerConnectionDialog: React.FC<Props> = ({
         use_ssh_agent: !!editingServer.use_ssh_agent,
         ssh_agent_path: editingServer.ssh_agent_path || '',
         use_mfa: !!editingServer.use_mfa,
+        run_scripts_enabled: !!editingServer.run_scripts_enabled,
         run_scripts: editingServer.run_scripts?.length
           ? editingServer.run_scripts
           : [{ content: '', delay_ms: 500 }],
@@ -226,6 +229,7 @@ const ServerConnectionDialog: React.FC<Props> = ({
         use_ssh_agent: !!values.use_ssh_agent,
         ssh_agent_path: values.ssh_agent_path || null,
         use_mfa: !!values.use_mfa,
+        run_scripts_enabled: !!values.run_scripts_enabled,
         run_scripts: (values.run_scripts || []).filter((s) => s.content?.trim()),
         description: values.description || '',
       };
@@ -316,6 +320,7 @@ const ServerConnectionDialog: React.FC<Props> = ({
         use_ssh_agent: !!values.use_ssh_agent,
         ssh_agent_path: values.ssh_agent_path || null,
         use_mfa: !!values.use_mfa,
+        run_scripts_enabled: !!values.run_scripts_enabled,
         run_scripts: (values.run_scripts || []).filter((s) => s.content?.trim()) || [],
         description: values.description || '',
         created_at: new Date(0).toISOString(),
@@ -613,14 +618,14 @@ const ServerConnectionDialog: React.FC<Props> = ({
 
           <Form.Item label="认证方式" name="auth_type" className="!mb-1">
             <div className="auth-tab-pill">
-              {(['Password', 'PrivateKey', 'ConfigFile'] as AuthType[]).map((t) => (
+              {(['Password', 'PrivateKey'] as AuthType[]).map((t) => (
                 <button
                   key={t}
                   type="button"
                   className={authType === t ? 'active' : ''}
                   onClick={() => form.setFieldsValue({ auth_type: t })}
                 >
-                  {t === 'Password' ? '密码' : t === 'PrivateKey' ? '私钥/证书' : '配置文件'}
+                  {t === 'Password' ? '密码' : '私钥/证书'}
                 </button>
               ))}
             </div>
@@ -655,21 +660,17 @@ const ServerConnectionDialog: React.FC<Props> = ({
               />
             </Form.Item>
 
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mb-2">
-              <Form.Item
-                label="使用 ssh 代理"
-                name="use_ssh_agent"
-                valuePropName="checked"
-                className="!mb-0"
-              >
-                <Switch size="small" />
-              </Form.Item>
-              <Form.Item label="SSH Agent Path" name="ssh_agent_path" className="!mb-0 flex-1 min-w-[180px]">
-                <Input placeholder="留空跟随系统 SSH_AUTH_SOCK" disabled={!form.getFieldValue('use_ssh_agent')} size="small" />
-              </Form.Item>
+            <div className="text-[11px] mb-2" style={{ color: 'var(--ls-text-tertiary)' }}>
+              当前版本支持密码和私钥认证；SSH Agent、配置文件和 MFA/OTP 仍在规划中。
             </div>
 
-            <Form.Item label="MFA/OTP" name="use_mfa" valuePropName="checked" className="!mb-2">
+            <Form.Item
+              label="允许自动执行脚本"
+              name="run_scripts_enabled"
+              valuePropName="checked"
+              className="!mb-2"
+              extra="关闭时仅保存脚本，不会在连接后执行。"
+            >
               <Switch size="small" />
             </Form.Item>
 

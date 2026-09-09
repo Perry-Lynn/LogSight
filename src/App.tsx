@@ -32,6 +32,7 @@ import {
   listServers,
   decryptSecret,
   saveServer,
+  stopTail,
 } from '@/services/tauriApi';
 import { useAppStore } from '@/store/useAppStore';
 
@@ -96,26 +97,19 @@ const AppInner: React.FC = () => {
     (async () => {
       try {
         const master = await getOrCreateMasterPassword();
-        // 如果只是初始化过，返回"master-initialized"，需要重新 peek 真实值（MVP 模式）
-        let real = master;
-        if (master === 'master-initialized') {
-          try {
-            real = await (await import('@/services/tauriApi')).peekMasterPassword();
-          } catch (_) { real = master; }
-        }
-        appMasterPwdRef.current = real;
-        setMasterPassword(real);
+        appMasterPwdRef.current = master;
+        setMasterPassword(master);
         const list = await listServers();
         setServers(list);
         // 解密各服务器的密码/私钥缓存到内存
         for (const s of list) {
           try {
             if (s.password_cipher) {
-              const pwd = await decryptSecret(s.password_cipher, real);
+              const pwd = await decryptSecret(s.password_cipher, master);
               setSecret(s.id, pwd);
             }
             if (s.private_key_cipher) {
-              const pem = await decryptSecret(s.private_key_cipher, real);
+              const pem = await decryptSecret(s.private_key_cipher, master);
               setSecret(s.id, undefined, pem);
             }
           } catch (_) { /* 解密失败不阻塞 */ }
@@ -153,7 +147,7 @@ const AppInner: React.FC = () => {
         // 窗口关闭前：主动请求停止所有流式会话
         tabs.forEach(async (t) => {
           if (t.session_id) {
-            try { await (await import('@/services/tauriApi')).stopTail(t.session_id); } catch (_) {}
+            try { await stopTail(t.session_id); } catch (_) {}
           }
         });
       });

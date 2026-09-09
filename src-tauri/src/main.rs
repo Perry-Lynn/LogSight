@@ -10,12 +10,13 @@
     windows_subsystem = "windows"
 )]
 
+mod commands;
 mod models;
 mod services;
-mod commands;
 
+use services::LogStreamService;
+use tauri::{Emitter, Manager, WindowEvent};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
-use tauri::{Manager, WindowEvent, Emitter};
 
 /*
  * Tauri 主函数
@@ -25,8 +26,7 @@ fn main() {
     // 1. 初始化 tracing 日志系统（开发环境打印到终端，生产环境可配置文件）
     tracing_subscriber::registry()
         .with(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info,warn,error")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,warn,error")),
         )
         .with(fmt::layer())
         .init();
@@ -39,7 +39,6 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             // master password
             commands::get_or_create_master_password,
-            commands::peek_master_password,
             commands::decrypt_secret,
             // server CRUD
             commands::save_server,
@@ -84,7 +83,8 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                // 关闭窗口前：停止所有日志流，防止后台 task 泄漏
+                // 关闭窗口前由后端直接停止所有日志流，不依赖前端 tabs 状态是否最新。
+                LogStreamService::stop_all();
                 window.emit("app-closing", ()).ok();
                 let _ = api;
             }
