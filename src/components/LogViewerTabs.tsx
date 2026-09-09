@@ -203,6 +203,7 @@ const LogViewerTabs: React.FC<Props> = ({ tabs, activeKey, onChange, onRemove })
   const [probing, setProbing] = useState(false);
   const [probeBase, setProbeBase] = useState('');
   const [probeTabKey, setProbeTabKey] = useState<string | null>(null);
+  const [probePickerOpen, setProbePickerOpen] = useState(false);
   const [probeResults, setProbeResults] = useState<LogSourceProbeResult[]>([]);
   const [logbackConfig, setLogbackConfig] = useState<LogbackServerConfig | null>(null);
   const [logFontSize, setLogFontSizeState] = useState(() => {
@@ -662,6 +663,24 @@ const LogViewerTabs: React.FC<Props> = ({ tabs, activeKey, onChange, onRemove })
     });
     pushPathHistory(tab.server_id, path);
     setProbeOpen(false);
+  };
+
+  /** 浏览器选择的是实际目录/文件；探测基准应回填为目录，且避免与相对 log_base_path 重复拼接。 */
+  const handleProbePickerConfirm = (selectedPath: string, selectedIsFile: boolean) => {
+    let directory = selectedPath.trim();
+    if (selectedIsFile) {
+      const slash = directory.lastIndexOf('/');
+      directory = slash > 0 ? directory.slice(0, slash) : '/';
+    }
+    const relativeBase = logbackConfig?.log_base_path?.trim().replace(/^\/+|\/+$/g, '');
+    if (relativeBase && !logbackConfig?.log_base_path?.trim().startsWith('/')) {
+      const suffix = `/${relativeBase}`;
+      if (directory.endsWith(suffix)) {
+        directory = directory.slice(0, -suffix.length) || '/';
+      }
+    }
+    setProbeBase(directory);
+    setProbePickerOpen(false);
   };
 
   /* === V10 新增：路径输入框 blur（失焦）时客户端+服务端双重校验 === */
@@ -1190,14 +1209,22 @@ const LogViewerTabs: React.FC<Props> = ({ tabs, activeKey, onChange, onRemove })
       >
         <div className="flex gap-2 mb-3">
           <Input
+            className="flex-1"
             value={probeBase}
             onChange={(e) => setProbeBase(e.target.value)}
-            placeholder="日志根目录，如 /var/log/app/logs"
+            placeholder="日志根目录，可手填或点击浏览"
             onPressEnter={() => {
               const tab = tabs.find((x) => x.key === probeTabKey);
               if (tab) void runLogbackProbe(tab, probeBase);
             }}
           />
+          <Button
+            icon={<FolderOpenOutlined />}
+            onClick={() => setProbePickerOpen(true)}
+            disabled={!probeTabKey}
+          >
+            浏览
+          </Button>
           <Button
             type="primary"
             loading={probing}
@@ -1283,6 +1310,23 @@ const LogViewerTabs: React.FC<Props> = ({ tabs, activeKey, onChange, onRemove })
           )}
         </div>
       </Modal>
+      {probePickerOpen && (() => {
+        const tab = tabs.find((x) => x.key === probeTabKey);
+        const server = tab ? servers.find((s) => s.id === tab.server_id) : null;
+        if (!tab || !server) return null;
+        const secrets = getPlainSecrets(server.id);
+        return (
+          <ServerDirectoryPicker
+            open={probePickerOpen}
+            onCancel={() => setProbePickerOpen(false)}
+            onOk={(path, isFile) => handleProbePickerConfirm(path, isFile)}
+            server={tab.server_snapshot || server}
+            passwordPlain={secrets.password_plain}
+            privateKeyPemPlain={secrets.private_key_pem_plain}
+            initialValue={probeBase || undefined}
+          />
+        );
+      })()}
     </>
   );
 };
