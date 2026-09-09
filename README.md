@@ -12,7 +12,7 @@ LogSight 是一个开放的桌面端远程日志查看工具：通过 SSH 连接
 - **减少噪音**：可按 logger、线程和日志来源过滤，并自动识别高频刷屏 logger。
 - **连接能力清晰可控**：当前支持密码和私钥认证，可浏览远程目录并校验路径权限；SSH config、SSH agent 和 MFA/OTP 已预留能力，仍在规划中。
 - **适合滚动日志**：支持 glob 路径、按时间查询，并可读取常见 Logback XML 配置来发现滚动日志源。
-- **跨平台基础**：基于 Tauri、React、TypeScript 和 Rust，提供轻量的原生桌面体验；当前 Release 提供 macOS 与 Windows 资产，自动发布工作流目前覆盖 Windows，远程日志命令通道优先支持 Linux/Unix 服务器。
+- **跨平台基础**：基于 Tauri、React、TypeScript 和 Rust，提供轻量的原生桌面体验；当前 Release 提供 macOS 与 Windows 资产，远程日志命令通道优先支持 Linux/Unix 服务器。
 
 ## 功能概览
 
@@ -57,7 +57,7 @@ npm run build
 npm run tauri:build
 ```
 
-推送形如 `v0.2.1` 的版本标签后，GitHub Actions 会在 Windows Runner 上自动构建并上传 `.msi` 和 `-setup.exe` 安装包到对应 Release。也可以在 GitHub Actions 页面手动运行 `Windows Release`，指定已有版本标签补发 Windows 安装包。
+推送形如 `v0.2.2` 的版本标签后，GitHub Actions 会自动构建 macOS DMG、Windows `.msi` 和 `-setup.exe` 安装包，并上传到对应 Release。
 
 ### 使用步骤
 
@@ -105,3 +105,12 @@ src-tauri/icons/     桌面应用图标资源
 ## 许可证
 
 本项目使用 MIT License，详见 [LICENSE](LICENSE)。
+
+## 随缘打赏
+
+如果 LogSight 对你有帮助，欢迎随缘打赏支持项目维护。完全自愿，不影响软件使用。
+
+<p align="center">
+  <img src="docs/assets/donation-alipay.png" alt="支付宝随缘打赏" width="320" />
+  <img src="docs/assets/donation-wechat.png" alt="微信随缘打赏" width="320" />
+</p>
