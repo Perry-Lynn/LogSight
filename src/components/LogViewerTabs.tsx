@@ -643,6 +643,12 @@ const LogViewerTabs: React.FC<Props> = ({ tabs, activeKey, onChange, onRemove })
     if (!probeTabKey) return;
     const tab = tabs.find((x) => x.key === probeTabKey);
     if (!tab) return;
+    if (latestOnly && !result.latest_file) {
+      message.warning(
+        `日志源“${result.group} · ${result.label}”当前没有匹配到具体文件，无法启动实时日志；请检查日志根目录或先生成日志文件。`,
+      );
+      return;
+    }
     const path = latestOnly && result.latest_file
       ? result.latest_file
       : result.glob_path;
@@ -1265,8 +1271,10 @@ const LogViewerTabs: React.FC<Props> = ({ tabs, activeKey, onChange, onRemove })
                 type="primary"
                 onClick={() => selectLogbackSource(r, true)}
                 className="flex-shrink-0"
+                disabled={!r.latest_file}
+                title={r.latest_file ? `打开最新文件：${r.latest_file}` : '当前没有匹配到具体日志文件'}
               >
-                实时最新
+                {r.latest_file ? '实时最新' : '无匹配文件'}
               </Button>
             </div>
           ))}
